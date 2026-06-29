@@ -1,6 +1,8 @@
 name: Create Release
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -8,6 +10,11 @@ on:
         required: false
         default: false
         type: boolean
+
+# Serialize releases so a fast second merge can't race the tag/bump of the first.
+concurrency:
+  group: create-release
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -18,6 +25,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      released: ${{ steps.checktag.outputs.release }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -37,13 +45,16 @@ jobs:
           echo "📦 Found version: $VERSION (tag: v$VERSION)"
 
       - name: Check if tag already exists
+        id: checktag
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "::error::Tag $TAG already exists! Bump PROJECT_VER in CMakeLists.txt first."
-            exit 1
+            echo "::notice::Tag $TAG already exists — skipping release. Bump PROJECT_VER in CMakeLists.txt to cut a new one."
+            echo "release=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Tag $TAG does not exist yet — will release"
+            echo "release=true" >> $GITHUB_OUTPUT
           fi
-          echo "✅ Tag $TAG does not exist yet"
 
       - name: ESP-IDF Build
         uses: espressif/esp-idf-ci-action@v1
@@ -58,7 +69,7 @@ jobs:
           echo "🔍 Dry run complete — version ${{ steps.version.outputs.version }}, build OK, no release created."
 
       - name: Create and push tag
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && steps.checktag.outputs.release == 'true' }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           git config user.name "github-actions[bot]"
@@ -67,7 +78,7 @@ jobs:
           git push origin "$TAG"
 
       - name: Generate changelog from conventional commits
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && steps.checktag.outputs.release == 'true' }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -n1)
@@ -93,7 +104,7 @@ jobs:
           cat /tmp/release_body.md
 
       - name: Create GitHub Release
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && steps.checktag.outputs.release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
@@ -113,7 +124,7 @@ jobs:
   # pynapoleon / agora). Skipped on dry runs.
   bump-main:
     needs: build-and-release
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && needs.build-and-release.outputs.released == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
