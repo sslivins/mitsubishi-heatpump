@@ -57,7 +57,7 @@ Base: `<base_topic>/<friendly_name>`
 
 | Direction | Topic suffix |
 |-----------|--------------|
-| subscribe | `/mode/set` `/temp/set` `/remote_temp/set` `/fan/set` `/vane/set` `/wideVane/set` `/system/set` |
+| subscribe | `/mode/set` `/temp/set` `/remote_temp/set` `/fan/set` `/vane/set` `/wideVane/set` `/system/set` `/ota/set` |
 | publish | `/state` (retained) `/settings` `/availability` (LWT) `/debug/packets` `/debug/logs` |
 | discovery | `homeassistant/climate/<friendly_name>/config` (retained) |
 
@@ -100,6 +100,23 @@ path. The same JSON API backs it:
 
 Web commands reuse `hvac_mqtt::Command`, so the web and MQTT control paths
 funnel through identical apply logic in `main.cpp`.
+
+## OTA updates
+
+Dual-app partition table (`ota_0` / `ota_1`) with rollback protection
+(`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). Three ways to update, one apply
+pipeline (`main/ota.cpp`):
+
+- **Local upload** — drag a `.bin` onto the dashboard's *Firmware update* card,
+  or `POST /api/ota` with the raw image as the body.
+- **HTTPS pull** — give it a URL (e.g. a GitHub release asset) via the dashboard
+  or `POST /api/ota/url` `{"url":"…"}`; it downloads + flashes in the background.
+  `GET /api/ota/status` reports `{state,progress,message}`.
+- **MQTT** — publish the firmware URL to `<base>/<friendly_name>/ota/set`.
+
+Rollback safety: a freshly-booted OTA image starts in `PENDING_VERIFY`; the
+firmware calls `esp_ota_mark_app_valid_cancel_rollback()` once WiFi reconnects,
+so a broken image that can't get online is automatically rolled back on reset.
 
 ## Releasing
 
