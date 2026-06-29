@@ -9,8 +9,9 @@
 body{font-family:-apple-system,system-ui,sans-serif;background:#0e1116;color:#e6edf3;
 min-height:100vh;padding:16px}
 .wrap{max-width:480px;margin:0 auto}
-h1{font-size:1.2em;color:#e60012;margin-bottom:2px}
-.sub{font-size:.8em;color:#8b949e;margin-bottom:14px}
+h1{font-size:1.2em;color:#e60012;margin-bottom:2px;text-align:center}
+.hver{text-align:center;font-size:.8em;color:#c9d1d9;margin-bottom:2px}
+.sub{font-size:.8em;color:#8b949e;margin-bottom:14px;text-align:center}
 .card{background:#161b22;border:1px solid #21262d;border-radius:12px;padding:16px;margin-bottom:14px}
 .card h2{font-size:.78em;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;margin-bottom:12px}
 .badges{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
@@ -72,6 +73,7 @@ cursor:pointer;user-select:none;transition:.15s}
 <body>
 <div class="wrap">
   <h1>Mitsubishi Heat Pump</h1>
+  <div class="hver" id="hdrver">firmware v—</div>
   <p class="sub" id="subtitle">connecting…</p>
 
   <div class="badges">
@@ -219,6 +221,7 @@ async function refresh(){
     badge($('bUnit'),s.unit_connected);
     badge($('bMqtt'),s.mqtt_connected);
     $('subtitle').textContent=s.hostname+' · '+s.ip;
+    $('hdrver').textContent='firmware v'+s.version;
     $('ver').textContent=s.version;
     $('ip').textContent=s.ip;
     $('uptime').textContent=fmtUptime(s.uptime_s);

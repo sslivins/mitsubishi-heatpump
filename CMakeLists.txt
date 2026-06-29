@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 
-# Bump this for releases — the create-release workflow tags v<PROJECT_VER>
-set(PROJECT_VER "0.1.1")
+# Bump this for releases — the create-release workflow tags v<PROJECT_VER>.
+# Bump on every functional change so OTA/update-checks see a new version.
+set(PROJECT_VER "0.2.0")
 
 # Allow local overrides (WiFi creds, MQTT broker, etc.) — not checked into git.
 # Copy sdkconfig.defaults.local.example -> sdkconfig.defaults.local and edit.
