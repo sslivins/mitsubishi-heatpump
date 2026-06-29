@@ -49,7 +49,7 @@ esp_err_t handle_status(httpd_req_t* req) {
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "version", app->version);
-    cJSON_AddStringToObject(root, "hostname", CONFIG_MDNS_HOSTNAME);
+    cJSON_AddStringToObject(root, "hostname", wifi::mdns_hostname().c_str());
     cJSON_AddStringToObject(root, "ip", wifi::get_ip());
     cJSON_AddBoolToObject(root, "unit_connected",
                           s_hooks.unit_connected && s_hooks.unit_connected());

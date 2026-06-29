@@ -83,15 +83,21 @@ the device starts a `mitsubishi-heatpump-XXXX` SoftAP (captive portal at
 `http://192.168.4.1/`); pick a network and enter the passphrase, and it saves to
 NVS and reboots into STA mode. The **MQTT broker** is likewise configurable at
 build time *or* at runtime from the web UI (**System → MQTT / Home Assistant**),
-persisted to NVS; saving reboots the device. Each unit derives a hardware-unique
-id from its factory MAC (used for the HA `unique_id`/device identity), so leaving
-`friendly_name` blank yields a non-colliding `heatpump-<id>` node — handy when
-running several units.
+persisted to NVS; saving reboots the device. Each unit derives a short
+hardware-unique id from its factory MAC (e.g. `E608`) that is reused everywhere
+so multiple units never collide: the SoftAP name (`mitsubishi-heatpump-<id>`),
+the **mDNS hostname** (`mitsubishi-heatpump-<id>.local`), and the default MQTT
+node (leaving `friendly_name` blank yields `heatpump-<id>`). The same id is the
+HA `unique_id`/device identity. Units are also **self-discoverable** via DNS-SD:
+each advertises an `_http._tcp` service with TXT records (`id`, `fw`, `model`,
+`path`), so `avahi-browse -rt _http._tcp` / Bonjour / a controller can list every
+unit without knowing the hostname.
 
 ## Web UI / REST API
 
 Once connected to WiFi the device serves a small diagnostics/control dashboard
-at `http://<ip>/` (or `http://mitsubishi-heatpump.local/` via mDNS). It is for
+at `http://<ip>/` (or `http://mitsubishi-heatpump-<id>.local/` via mDNS, where
+`<id>` is the unit's MAC suffix shown on the System tab). It is for
 provisioning and diagnostics — MQTT/Home Assistant remains the primary control
 path. The same JSON API backs it:
 
