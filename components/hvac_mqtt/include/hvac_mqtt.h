@@ -6,7 +6,7 @@
 ///
 ///   Base:        <base_topic>/<friendly_name>
 ///   Subscribe:   .../mode/set .../temp/set .../remote_temp/set .../fan/set
-///                .../vane/set .../wideVane/set .../system/set
+///                .../vane/set .../wideVane/set .../system/set .../ota/set
 ///   Publish:     .../state (retained) .../settings .../availability (LWT)
 ///                .../debug/packets .../debug/logs
 ///   HA discovery: homeassistant/climate/<friendly_name>/config (retained)
@@ -35,7 +35,7 @@ struct Config {
 
 /// A command parsed from a .../*/set topic, to be applied to the heat pump.
 struct Command {
-    enum class Kind { Power, Mode, Temperature, Fan, Vane, WideVane, RemoteTemp, System };
+    enum class Kind { Power, Mode, Temperature, Fan, Vane, WideVane, RemoteTemp, System, Ota };
     Kind kind;
     std::string value;  ///< raw payload (e.g. "HEAT", "21.5", "AUTO")
 };

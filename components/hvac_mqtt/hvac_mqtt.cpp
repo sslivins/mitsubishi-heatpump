@@ -37,6 +37,7 @@ bool topic_to_kind(const std::string& topic, Command::Kind& kind) {
         {"/vane/set",        Command::Kind::Vane},
         {"/wideVane/set",    Command::Kind::WideVane},
         {"/system/set",      Command::Kind::System},
+        {"/ota/set",         Command::Kind::Ota},
     };
     for (const auto& m : kMap) {
         if (topic == g_base + m.suffix) { kind = m.kind; return true; }
@@ -47,7 +48,7 @@ bool topic_to_kind(const std::string& topic, Command::Kind& kind) {
 void subscribe_all() {
     const char* suffixes[] = {
         "/mode/set", "/temp/set", "/remote_temp/set", "/fan/set",
-        "/vane/set", "/wideVane/set", "/system/set",
+        "/vane/set", "/wideVane/set", "/system/set", "/ota/set",
     };
     for (const char* s : suffixes) {
         std::string topic = g_base + s;

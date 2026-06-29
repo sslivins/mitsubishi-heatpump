@@ -15,10 +15,12 @@ idf_component_register(
          "wifi_manager.cpp"
          "web_ui.cpp"
          "dns_server.cpp"
+         "ota.cpp"
     INCLUDE_DIRS "."
     EMBED_FILES "web/index.html.gz"
                 "web/portal.html.gz"
     REQUIRES nvs_flash esp_wifi esp_netif esp_event esp_driver_i2c
              driver esp_timer esp_app_format esp_http_server json lwip
+             app_update esp_https_ota esp_http_client mbedtls
              cn105 m5pm1 hvac_mqtt
 )

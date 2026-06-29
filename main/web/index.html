@@ -53,6 +53,10 @@ background:#fff;border-radius:50%;transition:.2s}
 .btn-danger:hover{background:#30363d}
 .note{font-size:.75em;color:#f0883e;background:#2a1a0d;border:1px solid #5a3a1a;
 border-radius:8px;padding:8px 10px;margin-bottom:14px}
+.status{text-align:center;padding:10px;border-radius:8px;font-size:.85em}
+.status.info{background:#21262d;color:#58a6ff}
+.status.ok{background:#0d2a1c;color:#3fb950}
+.status.err{background:#2a0d0d;color:#f85149}
 .dim{opacity:.5;pointer-events:none}
 </style>
 </head>
@@ -128,6 +132,22 @@ border-radius:8px;padding:8px 10px;margin-bottom:14px}
       <div class="stat"><div class="k">Source</div><div class="v" id="psrc">--</div></div>
       <div class="stat"><div class="k">Charging</div><div class="v" id="chg">--</div></div>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>Firmware update</h2>
+    <div class="row">
+      <label>Upload .bin</label>
+      <input type="file" id="fwfile" accept=".bin" style="font-size:.8em;max-width:200px">
+    </div>
+    <button class="btn btn-warn" id="upBtn" onclick="uploadFw()">Upload &amp; flash</button>
+    <div class="row" style="margin-top:14px">
+      <label>From URL</label>
+    </div>
+    <input type="text" id="fwurl" placeholder="https://…/mitsubishi-heatpump.bin"
+      style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid #30363d;background:#0e1116;color:#e6edf3;font-size:.85em">
+    <button class="btn btn-warn" onclick="urlFw()">Pull &amp; flash</button>
+    <div id="otaState" class="status hidden" style="margin-top:12px"></div>
   </div>
 
   <div class="card">
@@ -215,6 +235,43 @@ async function sysPost(url,msg){
   if(!confirm(msg))return;
   try{await fetch(url,{method:'POST'})}catch(e){}
   $('subtitle').textContent='rebooting…';
+}
+
+function otaMsg(m,cls){const el=$('otaState');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
+
+async function uploadFw(){
+  const f=$('fwfile').files[0];
+  if(!f){otaMsg('Pick a .bin file first','err');return}
+  $('upBtn').disabled=true;
+  otaMsg('Uploading '+(f.size/1024|0)+' KB — do not power off','info');
+  try{
+    const r=await fetch('/api/ota',{method:'POST',
+      headers:{'Content-Type':'application/octet-stream'},body:f});
+    otaMsg(r.ok?'Uploaded — rebooting into new firmware':'Upload failed: '+r.status,r.ok?'ok':'err');
+  }catch(e){otaMsg('Rebooting…','ok')}
+  finally{$('upBtn').disabled=false}
+}
+
+async function urlFw(){
+  const u=$('fwurl').value.trim();
+  if(!u){otaMsg('Enter a firmware URL','err');return}
+  try{
+    const r=await fetch('/api/ota/url',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})});
+    if(r.ok){otaMsg('Download started…','info');setTimeout(pollOta,1000)}
+    else otaMsg('Update busy or rejected','err');
+  }catch(e){otaMsg('Request failed','err')}
+}
+
+async function pollOta(){
+  try{
+    const s=await (await fetch('/api/ota/status')).json();
+    if(s.state==='in_progress'){
+      otaMsg('Updating… '+(s.progress>=0?s.progress+'%':s.message),'info');
+      setTimeout(pollOta,1500);
+    }else if(s.state==='success'){otaMsg('Update complete — rebooting','ok');}
+    else if(s.state==='failed'){otaMsg('Update failed: '+s.message,'err');}
+  }catch(e){otaMsg('Device rebooting…','ok')}
 }
 
 refresh();

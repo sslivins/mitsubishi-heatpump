@@ -3,6 +3,7 @@
 
 #include "web_ui.h"
 #include "wifi_manager.h"
+#include "ota.h"
 
 #include <cstring>
 
@@ -185,6 +186,98 @@ esp_err_t handle_factory_reset(httpd_req_t* req) {
     return ESP_OK;  // unreachable
 }
 
+// ── POST /api/ota — stream a raw .bin upload into the inactive slot ─────
+esp_err_t handle_ota_upload(httpd_req_t* req) {
+    set_cors(req);
+    int total = req->content_len;
+    if (ota::local_begin(total > 0 ? total : 0) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "OTA busy or no partition");
+        return ESP_FAIL;
+    }
+    char buf[2048];
+    int remaining = total;
+    while (remaining > 0) {
+        int r = httpd_req_recv(req, buf, sizeof(buf) < (size_t)remaining
+                                              ? sizeof(buf) : remaining);
+        if (r <= 0) {
+            ota::local_abort();
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Upload interrupted");
+            return ESP_FAIL;
+        }
+        if (ota::local_write(buf, r) != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Write failed");
+            return ESP_FAIL;
+        }
+        remaining -= r;
+    }
+    if (ota::local_end() != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Image validation failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"status\":\"ok\",\"message\":\"rebooting\"}");
+    vTaskDelay(pdMS_TO_TICKS(800));
+    esp_restart();
+    return ESP_OK;  // unreachable
+}
+
+// ── POST /api/ota/url — pull firmware from a URL (background) ───────────
+esp_err_t handle_ota_url(httpd_req_t* req) {
+    set_cors(req);
+    char* body = recv_body(req);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
+        return ESP_FAIL;
+    }
+    cJSON* json = cJSON_Parse(body);
+    free(body);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    const cJSON* jurl = cJSON_GetObjectItem(json, "url");
+    if (!jurl || !cJSON_IsString(jurl) || strlen(jurl->valuestring) == 0) {
+        cJSON_Delete(json);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing url");
+        return ESP_FAIL;
+    }
+    esp_err_t err = ota::start_url(jurl->valuestring);
+    cJSON_Delete(json);
+
+    httpd_resp_set_type(req, "application/json");
+    if (err != ESP_OK) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"status\":\"busy\"}");
+    }
+    return httpd_resp_sendstr(req, "{\"status\":\"started\"}");
+}
+
+// ── GET /api/ota/status ────────────────────────────────────────────────
+esp_err_t handle_ota_status(httpd_req_t* req) {
+    set_cors(req);
+    ota::Status s = ota::get_status();
+    const char* state = "idle";
+    switch (s.state) {
+        case ota::State::InProgress: state = "in_progress"; break;
+        case ota::State::Success:    state = "success"; break;
+        case ota::State::Failed:     state = "failed"; break;
+        default:                     state = "idle"; break;
+    }
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "state", state);
+    cJSON_AddNumberToObject(root, "progress", s.progress);
+    cJSON_AddStringToObject(root, "message", s.message.c_str());
+    cJSON_AddBoolToObject(root, "busy", ota::busy());
+    char* str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
 // ── OPTIONS /api/* (CORS preflight) ────────────────────────────────────
 esp_err_t handle_options(httpd_req_t* req) {
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -216,6 +309,9 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/status",              HTTP_GET,     handle_status,         nullptr},
         {"/api/settings",            HTTP_GET,     handle_get_settings,   nullptr},
         {"/api/settings",            HTTP_POST,    handle_post_settings,  nullptr},
+        {"/api/ota",                 HTTP_POST,    handle_ota_upload,     nullptr},
+        {"/api/ota/url",             HTTP_POST,    handle_ota_url,        nullptr},
+        {"/api/ota/status",          HTTP_GET,     handle_ota_status,     nullptr},
         {"/api/system/restart",      HTTP_POST,    handle_restart,        nullptr},
         {"/api/system/factory_reset",HTTP_POST,    handle_factory_reset,  nullptr},
         {"/api/*",                   HTTP_OPTIONS, handle_options,        nullptr},

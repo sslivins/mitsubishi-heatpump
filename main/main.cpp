@@ -14,6 +14,7 @@
 #include "m5pm1.h"
 #include "hvac_mqtt.h"
 #include "web_ui.h"
+#include "ota.h"
 
 #include <cstdlib>
 #include <mutex>
@@ -117,6 +118,7 @@ void on_mqtt_command(const hvac_mqtt::Command& cmd) {
         case K::WideVane:    g_hp.setWideVaneSetting(cmd.value); break;
         case K::RemoteTemp:  g_hp.setRemoteTemperature(strtof(cmd.value.c_str(), nullptr)); break;
         case K::System:      ESP_LOGI(TAG, "system cmd: %s", cmd.value.c_str()); break;
+        case K::Ota:         ota::start_url(cmd.value); break;
     }
 }
 
@@ -150,6 +152,8 @@ extern "C" void app_main() {
     }
     ESP_ERROR_CHECK(ret);
 
+    ota::init();
+
     // Power management first — it owns the battery/charge path.
     init_pmic();
     xTaskCreate(pmic_task, "pmic", 3072, nullptr, 5, nullptr);
@@ -161,6 +165,10 @@ extern "C" void app_main() {
         return;  // pmic_task keeps running; reboot after provisioning.
     }
     ESP_LOGI(TAG, "WiFi up: %s", wifi::get_ip());
+
+    // We reached the network — the running image is healthy. Confirm it so the
+    // bootloader doesn't roll back a freshly-OTA'd slot on the next reset.
+    ota::mark_valid();
 
     // MQTT bridge.
     hvac_mqtt::Config mcfg{
