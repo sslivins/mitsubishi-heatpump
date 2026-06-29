@@ -111,6 +111,8 @@ path. The same JSON API backs it:
 | `POST` | `/api/system/factory_reset` | erase WiFi creds + reboot into setup |
 | `GET`  | `/api/mqtt` | current broker settings `{host,port,username,base_topic,friendly_name,password_set,connected}` (password never returned) |
 | `POST` | `/api/mqtt` | save broker settings to NVS + reboot (`{host,port,username,password?,base_topic,friendly_name}`; omit `password` to keep the stored one) |
+| `GET`  | `/api/wifi` | current network `{ssid,mode,connected,ip,ap_name,password_set}` (password never returned) |
+| `POST` | `/api/wifi` | save credentials to NVS + reboot (`{ssid,password?}`; omit `password` to keep the stored one) |
 | `GET`  | `/api/update` | cached GitHub release check `{current,latest,update_available,checking,checked,release_url,error}` |
 | `POST` | `/api/update/check` | trigger an immediate GitHub `/releases/latest` poll (background) |
 | `POST` | `/api/update/install` | download + flash the latest release (if newer) |

@@ -391,6 +391,73 @@ esp_err_t handle_mqtt_post(httpd_req_t* req) {
     return ESP_OK;  // unreachable
 }
 
+// ── GET /api/wifi — current WiFi network (password never returned) ─────
+esp_err_t handle_wifi_get(httpd_req_t* req) {
+    set_cors(req);
+    wifi::Mode m = wifi::get_mode();
+    const char* mode = m == wifi::Mode::CONNECTED    ? "connected"
+                     : m == wifi::Mode::CONNECTING   ? "connecting"
+                     : m == wifi::Mode::PROVISIONING ? "provisioning"
+                                                     : "idle";
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "ssid", wifi::get_ssid());
+    cJSON_AddStringToObject(root, "mode", mode);
+    cJSON_AddBoolToObject(root, "connected", wifi::is_connected());
+    cJSON_AddStringToObject(root, "ip", wifi::get_ip());
+    cJSON_AddStringToObject(root, "ap_name", wifi::get_ap_name());
+    cJSON_AddBoolToObject(root, "password_set", wifi::has_password());
+    char* str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// ── POST /api/wifi — set network credentials to NVS, then reboot ───────
+esp_err_t handle_wifi_post(httpd_req_t* req) {
+    set_cors(req);
+    char* body = recv_body(req);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
+        return ESP_FAIL;
+    }
+    cJSON* json = cJSON_Parse(body);
+    free(body);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    const cJSON* jssid = cJSON_GetObjectItem(json, "ssid");
+    const cJSON* jpass = cJSON_GetObjectItem(json, "password");
+    std::string ssid = (jssid && cJSON_IsString(jssid)) ? jssid->valuestring : "";
+    // Preserve the stored password when the field is omitted/blank (so the user
+    // can change only the SSID without re-typing the key).
+    std::string pass;
+    if (jpass && cJSON_IsString(jpass) && jpass->valuestring[0] != '\0')
+        pass = jpass->valuestring;
+    else
+        pass = wifi::get_password();
+    cJSON_Delete(json);
+
+    if (ssid.empty()) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ssid is required");
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = wifi::save_credentials(ssid.c_str(), pass.c_str());
+    httpd_resp_set_type(req, "application/json");
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS write failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_sendstr(req, "{\"status\":\"saved\",\"message\":\"rebooting\"}");
+    vTaskDelay(pdMS_TO_TICKS(800));
+    esp_restart();
+    return ESP_OK;  // unreachable
+}
+
 // ── OPTIONS /api/* (CORS preflight) ────────────────────────────────────
 esp_err_t handle_options(httpd_req_t* req) {
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -407,7 +474,7 @@ esp_err_t init(const Hooks& hooks) {
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn = httpd_uri_match_wildcard;
-    cfg.max_uri_handlers = 16;
+    cfg.max_uri_handlers = 20;
     cfg.stack_size = 8192;
     cfg.lru_purge_enable = true;
 
@@ -430,6 +497,8 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/update/install",      HTTP_POST,    handle_update_install, nullptr},
         {"/api/mqtt",                HTTP_GET,      handle_mqtt_get,       nullptr},
         {"/api/mqtt",                HTTP_POST,     handle_mqtt_post,      nullptr},
+        {"/api/wifi",                HTTP_GET,      handle_wifi_get,       nullptr},
+        {"/api/wifi",                HTTP_POST,     handle_wifi_post,      nullptr},
         {"/api/system/restart",      HTTP_POST,    handle_restart,        nullptr},
         {"/api/system/factory_reset",HTTP_POST,    handle_factory_reset,  nullptr},
         {"/api/*",                   HTTP_OPTIONS, handle_options,        nullptr},

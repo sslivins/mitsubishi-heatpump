@@ -38,6 +38,8 @@ EventGroupHandle_t s_events = nullptr;
 Mode  s_mode = Mode::IDLE;
 char  s_ip[16] = "0.0.0.0";
 char  s_ap_name[33] = {0};
+char  s_ssid[33] = {0};
+char  s_pass[65] = {0};
 int   s_retries = 0;
 
 httpd_handle_t s_portal = nullptr;
@@ -270,6 +272,8 @@ esp_err_t init() {
         ESP_LOGW(TAG, "no credentials — entering provisioning");
         return start_provisioning();
     }
+    strlcpy(s_ssid, ssid, sizeof(s_ssid));
+    strlcpy(s_pass, pass, sizeof(s_pass));
 
     s_mode = Mode::CONNECTING;
     esp_netif_create_default_wifi_sta();
@@ -304,6 +308,9 @@ Mode get_mode() { return s_mode; }
 bool is_connected() { return s_mode == Mode::CONNECTED; }
 const char* get_ip() { return s_ip; }
 const char* get_ap_name() { return s_ap_name; }
+const char* get_ssid() { return s_ssid; }
+bool has_password() { return s_pass[0] != '\0'; }
+const char* get_password() { return s_pass; }
 
 esp_err_t save_credentials(const char* ssid, const char* pass) {
     nvs_handle_t h;

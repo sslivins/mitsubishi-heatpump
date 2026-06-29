@@ -34,6 +34,14 @@ bool is_connected();
 const char* get_ip();
 const char* get_ap_name();
 
+/// SSID the device is configured to join (empty in out-of-box / provisioning).
+const char* get_ssid();
+
+/// Whether a WiFi password is currently stored (the password itself is never
+/// exposed over the API — used server-side only to preserve it on partial saves).
+bool has_password();
+const char* get_password();
+
 /// Store credentials in NVS (used by the provisioning portal). Caller should
 /// reboot afterwards.
 esp_err_t save_credentials(const char* ssid, const char* pass);

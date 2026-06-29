@@ -13,6 +13,10 @@
 ///   POST /api/system/factory_reset -> erase WiFi creds + restart
 ///   GET  /api/mqtt               -> current broker settings (password masked)
 ///   POST /api/mqtt               -> save broker settings to NVS + restart
+///   GET  /api/wifi               -> current network {ssid,mode,connected,ip,
+///                                   ap_name,password_set} (password never sent)
+///   POST /api/wifi               -> save {ssid,password?} to NVS + restart
+///                                   (password preserved when omitted)
 ///
 /// The module is decoupled from the rest of the firmware via the Hooks struct:
 /// the app supplies getters and a command applier so this layer never touches
