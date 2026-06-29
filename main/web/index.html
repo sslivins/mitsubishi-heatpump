@@ -36,6 +36,11 @@ select:focus{border-color:#e60012}
 .mqf input{flex:1;max-width:62%;background:#0e1116;color:#e6edf3;border:1px solid #30363d;
 border-radius:8px;padding:8px 10px;font-size:.85em;outline:none}
 .mqf input:focus{border-color:#e60012}
+.pbar{height:10px;background:#222b36;border:1px solid #30363d;border-radius:6px;overflow:hidden;margin:10px 0;display:none}
+.pbar.show{display:block}
+.pbar>i{display:block;height:100%;width:0;background:#e60012;border-radius:6px;transition:width .3s ease}
+.pbar.indet>i{width:40%;animation:pslide 1.1s linear infinite}
+@keyframes pslide{from{margin-left:-40%}to{margin-left:100%}}
 .stepper{display:flex;align-items:center;gap:12px}
 .stepper button{width:36px;height:36px;border-radius:8px;border:1px solid #30363d;
 background:#21262d;color:#e6edf3;font-size:1.2em;cursor:pointer}
@@ -216,6 +221,7 @@ cursor:pointer;user-select:none;transition:.15s}
       <div class="stat"><div class="k">Latest (GitHub)</div><div class="v" id="updLatest">--</div></div>
     </div>
     <div id="updMsg" class="status hidden" style="margin:10px 0"></div>
+    <div class="pbar" id="updBar"><i></i></div>
     <button class="btn" id="updCheckBtn" onclick="checkUpdate()">Check for updates</button>
     <button class="btn btn-warn hidden" id="updInstallBtn" onclick="installUpdate()">Install update</button>
   </div>
@@ -234,6 +240,7 @@ cursor:pointer;user-select:none;transition:.15s}
       style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid #30363d;background:#0e1116;color:#e6edf3;font-size:.85em">
     <button class="btn btn-warn" onclick="urlFw()">Pull &amp; flash</button>
     <div id="otaState" class="status hidden" style="margin-top:12px"></div>
+    <div class="pbar" id="otaBar"><i></i></div>
   </div>
   </div><!-- /panel-system -->
 </div>
@@ -320,17 +327,21 @@ async function sysPost(url,msg){
 }
 
 function otaMsg(m,cls){const el=$('otaState');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
+function resetBar(barId){const b=$(barId);b.classList.remove('show','indet');b.firstElementChild.style.width='0'}
 
 async function uploadFw(){
   const f=$('fwfile').files[0];
   if(!f){otaMsg('Pick a .bin file first','err');return}
   $('upBtn').disabled=true;
   otaMsg('Uploading '+(f.size/1024|0)+' KB — do not power off','info');
+  const bar=$('otaBar');resetBar('otaBar');bar.classList.add('show','indet');
   try{
     const r=await fetch('/api/ota',{method:'POST',
       headers:{'Content-Type':'application/octet-stream'},body:f});
+    bar.classList.remove('indet');bar.firstElementChild.style.width='100%';
     otaMsg(r.ok?'Uploaded — rebooting into new firmware':'Upload failed: '+r.status,r.ok?'ok':'err');
-  }catch(e){otaMsg('Rebooting…','ok')}
+    if(!r.ok)resetBar('otaBar');
+  }catch(e){bar.classList.remove('indet');bar.firstElementChild.style.width='100%';otaMsg('Rebooting…','ok')}
   finally{$('upBtn').disabled=false}
 }
 
@@ -340,20 +351,35 @@ async function urlFw(){
   try{
     const r=await fetch('/api/ota/url',{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})});
-    if(r.ok){otaMsg('Download started…','info');setTimeout(pollOta,1000)}
+    if(r.ok){otaMsg('Download started…','info');resetBar('otaBar');setTimeout(()=>pollProgress(otaMsg,'otaBar'),800)}
     else otaMsg('Update busy or rejected','err');
   }catch(e){otaMsg('Request failed','err')}
 }
 
-async function pollOta(){
+// Drive a progress bar + message from /api/ota/status until a terminal state.
+// `seen` guards against a stale success/failed left from a previous run before
+// the new task flips state to in_progress.
+async function pollProgress(msg,barId,seen){
+  seen=seen||{v:false,n:0};seen.n++;
+  const bar=$(barId),fill=bar.firstElementChild;
   try{
     const s=await (await fetch('/api/ota/status')).json();
     if(s.state==='in_progress'){
-      otaMsg('Updating… '+(s.progress>=0?s.progress+'%':s.message),'info');
-      setTimeout(pollOta,1500);
-    }else if(s.state==='success'){otaMsg('Update complete — rebooting','ok');}
-    else if(s.state==='failed'){otaMsg('Update failed: '+s.message,'err');}
-  }catch(e){otaMsg('Device rebooting…','ok')}
+      seen.v=true;bar.classList.add('show');
+      if(s.progress>=0){bar.classList.remove('indet');fill.style.width=s.progress+'%';
+        msg('Updating… '+s.progress+'%'+(s.message?' ('+s.message+')':''),'info');}
+      else{bar.classList.add('indet');msg('Updating… '+(s.message||'working'),'info');}
+      setTimeout(()=>pollProgress(msg,barId,seen),1000);
+    }else if(seen.v&&s.state==='success'){
+      bar.classList.remove('indet');fill.style.width='100%';
+      msg('Update complete — rebooting','ok');
+    }else if(seen.v&&s.state==='failed'){
+      resetBar(barId);msg('Update failed: '+(s.message||'unknown error'),'err');
+    }else{
+      if(!seen.v&&seen.n>25){msg('No update activity detected','err');return}
+      setTimeout(()=>pollProgress(msg,barId,seen),1000);
+    }
+  }catch(e){bar.classList.remove('indet');fill.style.width='100%';msg('Device rebooting…','ok')}
 }
 
 // ── GitHub software update ─────────────────────────────────────────────
@@ -389,7 +415,7 @@ async function installUpdate(){
   if(!confirm('Download and install the latest firmware? The device will reboot.'))return;
   try{
     const r=await fetch('/api/update/install',{method:'POST'});
-    if(r.ok){updMsg('Download started…','info');setTimeout(pollOta,1000)}
+    if(r.ok){updMsg('Download started…','info');resetBar('updBar');setTimeout(()=>pollProgress(updMsg,'updBar'),800)}
     else updMsg('Update unavailable or busy','err');
   }catch(e){updMsg('Request failed','err')}
 }
