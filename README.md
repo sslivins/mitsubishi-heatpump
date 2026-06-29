@@ -9,11 +9,12 @@ It is the ground-up ESP-IDF successor to
 and preserves that project's MQTT topic contract, so existing Home Assistant
 entities keep working.
 
-> **Status: scaffold.** The architecture, threading, WiFi (incl. captive-portal
-> provisioning + mDNS), the on-device web UI / REST API, MQTT client wiring, and
-> the PMIC I²C driver are in place and build. The CN105 packet engine and the
-> MQTT JSON payloads are marked `TODO(port)` stubs — fill them in once hardware
-> is on the bench. CI builds green today.
+> **Status: bring-up.** The architecture, threading, WiFi (incl. captive-portal
+> provisioning + mDNS), the on-device web UI / REST API, the MQTT client +
+> Home Assistant discovery (climate + firmware `update` entities, state/settings
+> JSON), and the PMIC I²C driver are in place and build. The CN105 packet engine
+> is still a `TODO(port)` stub, so published telemetry reflects seeded
+> placeholder values until the serial protocol lands. CI builds green today.
 
 ## Hardware
 
@@ -76,11 +77,16 @@ idf.py build
 idf.py -p <PORT> flash monitor
 ```
 
-WiFi/MQTT can be set at build time (`sdkconfig.defaults.local` /
-`menuconfig`) or at runtime (NVS, via the captive-portal SoftAP). On first boot
-with no credentials the device starts a `mitsubishi-heatpump-XXXX` SoftAP
-(captive portal at `http://192.168.4.1/`); pick a network and enter the
-passphrase, and it saves to NVS and reboots into STA mode.
+WiFi can be set at build time (`sdkconfig.defaults.local` / `menuconfig`) or at
+runtime (NVS, via the captive-portal SoftAP). On first boot with no credentials
+the device starts a `mitsubishi-heatpump-XXXX` SoftAP (captive portal at
+`http://192.168.4.1/`); pick a network and enter the passphrase, and it saves to
+NVS and reboots into STA mode. The **MQTT broker** is likewise configurable at
+build time *or* at runtime from the web UI (**System → MQTT / Home Assistant**),
+persisted to NVS; saving reboots the device. Each unit derives a hardware-unique
+id from its factory MAC (used for the HA `unique_id`/device identity), so leaving
+`friendly_name` blank yields a non-colliding `heatpump-<id>` node — handy when
+running several units.
 
 ## Web UI / REST API
 
@@ -97,6 +103,8 @@ path. The same JSON API backs it:
 | `POST` | `/api/settings` | apply any subset of `{power,mode,temperature,fan,vane,wideVane,remoteTemp}` |
 | `POST` | `/api/system/restart` | reboot |
 | `POST` | `/api/system/factory_reset` | erase WiFi creds + reboot into setup |
+| `GET`  | `/api/mqtt` | current broker settings `{host,port,username,base_topic,friendly_name,password_set,connected}` (password never returned) |
+| `POST` | `/api/mqtt` | save broker settings to NVS + reboot (`{host,port,username,password?,base_topic,friendly_name}`; omit `password` to keep the stored one) |
 | `GET`  | `/api/update` | cached GitHub release check `{current,latest,update_available,checking,checked,release_url,error}` |
 | `POST` | `/api/update/check` | trigger an immediate GitHub `/releases/latest` poll (background) |
 | `POST` | `/api/update/install` | download + flash the latest release (if newer) |

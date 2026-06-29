@@ -11,6 +11,8 @@
 ///                                   wideVane,remoteTemp} (any subset)
 ///   POST /api/system/restart     -> esp_restart()
 ///   POST /api/system/factory_reset -> erase WiFi creds + restart
+///   GET  /api/mqtt               -> current broker settings (password masked)
+///   POST /api/mqtt               -> save broker settings to NVS + restart
 ///
 /// The module is decoupled from the rest of the firmware via the Hooks struct:
 /// the app supplies getters and a command applier so this layer never touches

@@ -49,6 +49,22 @@ esp_err_t HeatPump::connect(uart_port_t port, int tx_gpio, int rx_gpio) {
              kBaud, tx_gpio, rx_gpio);
     // TODO(port): send the connect handshake (0xFC 0x5A ...) and wait for ACK,
     // then set settings_.connected = true on success.
+    //
+    // Until the packet engine lands, seed believable placeholder values so the
+    // web UI and Home Assistant entities show something sensible. `connected`
+    // stays false so callers can tell real telemetry from these defaults.
+    settings_ = Settings{};
+    settings_.power       = "OFF";
+    settings_.mode        = "HEAT";
+    settings_.temperature = 21.0f;
+    settings_.fan         = "AUTO";
+    settings_.vane        = "AUTO";
+    settings_.wideVane    = "|";
+    settings_.connected   = false;
+    status_ = Status{};
+    status_.roomTemperature     = 21.0f;
+    status_.operating           = false;
+    status_.compressorFrequency = 0;
     return ESP_OK;
 }
 

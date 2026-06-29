@@ -17,10 +17,13 @@
 #include "ota.h"
 
 #include <cstdlib>
+#include <cstdio>
+#include <string>
 #include <mutex>
 
 #include "esp_log.h"
 #include "esp_app_desc.h"
+#include "esp_mac.h"
 #include "nvs_flash.h"
 #include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
@@ -98,7 +101,6 @@ void cn105_task(void*) {
     g_hp.enableAutoUpdate();
     g_hp.connect(static_cast<uart_port_t>(CONFIG_CN105_UART_PORT),
                  CONFIG_CN105_UART_TX_PIN, CONFIG_CN105_UART_RX_PIN);
-    hvac_mqtt::publish_discovery(g_hp.getSettings());
 
     while (true) {
         g_hp.update();
@@ -121,6 +123,33 @@ void on_mqtt_command(const hvac_mqtt::Command& cmd) {
         case K::Ota:         ota::start_url(cmd.value); break;
         case K::UpdateInstall: ota::install_latest(); break;
     }
+}
+
+// The ESP32's factory-programmed MAC (eFuse) is its hardware "serial number" —
+// unique per chip. Derive a short, stable id from the low 3 bytes; used for the
+// HA device identity and (when no friendly_name is configured) the MQTT node so
+// 4 units never collide out of the box.
+std::string device_uid() {
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char buf[7];
+    std::snprintf(buf, sizeof(buf), "%02X%02X%02X", mac[3], mac[4], mac[5]);
+    return std::string(buf);
+}
+
+// Split a "mqtt://host:port" broker URI into host + port for the settings model.
+void parse_broker_uri(const std::string& uri, std::string& host, int& port) {
+    std::string s = uri;
+    auto scheme = s.find("://");
+    if (scheme != std::string::npos) s = s.substr(scheme + 3);
+    auto colon = s.rfind(':');
+    if (colon != std::string::npos) {
+        host = s.substr(0, colon);
+        port = atoi(s.substr(colon + 1).c_str());
+    } else {
+        host = s;
+    }
+    if (port <= 0) port = 1883;
 }
 
 void init_pmic() {
@@ -171,17 +200,50 @@ extern "C" void app_main() {
     // bootloader doesn't roll back a freshly-OTA'd slot on the next reset.
     ota::mark_valid();
 
-    // MQTT bridge.
+    // MQTT bridge. Runtime settings (web UI, persisted to NVS) win over the
+    // Kconfig fallback. The friendly_name is the MQTT node and HA device label;
+    // if blank, fall back to a unique per-chip name so 4 units don't collide.
+    std::string uid = device_uid();
+
+    hvac_mqtt::StoredSettings fallback;
+    parse_broker_uri(CONFIG_MQTT_BROKER_URI, fallback.host, fallback.port);
+    fallback.username      = CONFIG_MQTT_USERNAME;
+    fallback.password      = CONFIG_MQTT_PASSWORD;
+    fallback.base_topic    = CONFIG_MQTT_BASE_TOPIC;
+    fallback.friendly_name = CONFIG_MQTT_FRIENDLY_NAME;
+    hvac_mqtt::StoredSettings ms = hvac_mqtt::load_settings(fallback);
+
+    std::string friendly = ms.friendly_name;
+    if (friendly.empty()) friendly = "heatpump-" + uid;
+    char uri[128];
+    std::snprintf(uri, sizeof(uri), "mqtt://%s:%d", ms.host.c_str(), ms.port);
+    ESP_LOGI(TAG, "device uid %s, broker %s, mqtt node '%s'",
+             uid.c_str(), uri, friendly.c_str());
+
     hvac_mqtt::Config mcfg{
-        .broker_uri    = CONFIG_MQTT_BROKER_URI,
-        .username      = CONFIG_MQTT_USERNAME,
-        .password      = CONFIG_MQTT_PASSWORD,
-        .base_topic    = CONFIG_MQTT_BASE_TOPIC,
-        .friendly_name = CONFIG_MQTT_FRIENDLY_NAME,
+        .broker_uri    = uri,
+        .username      = ms.username,
+        .password      = ms.password,
+        .base_topic    = ms.base_topic,
+        .friendly_name = friendly,
+        .device_uid    = uid,
+        .sw_version    = esp_app_get_description()->version,
     };
     if (hvac_mqtt::init(mcfg, on_mqtt_command) != ESP_OK) {
         ESP_LOGE(TAG, "MQTT init failed");
     }
+
+    // On every (re)connect, (re)publish the retained HA discovery configs and the
+    // current state so Home Assistant re-syncs after a broker drop. Retained
+    // discovery alone is lost if it was queued before the link was up.
+    hvac_mqtt::set_on_connected([] {
+        hvac_mqtt::publish_discovery(g_hp.getSettings());
+        hvac_mqtt::publish_update_discovery();
+        hvac_mqtt::publish_settings(g_hp.getSettings());
+        hvac_mqtt::publish_state(g_hp.getSettings(), g_hp.getStatus());
+        ota::UpdateInfo u = ota::get_update_info();
+        hvac_mqtt::publish_update_state(u.current_version, u.latest_version, u.release_url);
+    });
 
     // On-device web UI (REST + dashboard). Reuses on_mqtt_command so the web
     // and MQTT control paths funnel through identical apply logic.
@@ -210,11 +272,6 @@ extern "C" void app_main() {
     // to the web UI and to a Home Assistant `update` entity (with an Install
     // button wired back to ota::install_latest()).
     ota::set_on_update_changed([] {
-        static bool discovery_sent = false;
-        if (!discovery_sent) {
-            hvac_mqtt::publish_update_discovery();
-            discovery_sent = true;
-        }
         ota::UpdateInfo u = ota::get_update_info();
         hvac_mqtt::publish_update_state(u.current_version, u.latest_version, u.release_url);
     });
