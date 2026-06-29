@@ -15,6 +15,9 @@ permissions:
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -104,3 +107,36 @@ jobs:
             build/ota_data_initial.bin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # After a successful release, pre-increment the patch version on main so the
+  # next release has a fresh tag (mirrors the bump-main job in pygemstone /
+  # pynapoleon / agora). Skipped on dry runs.
+  bump-main:
+    needs: build-and-release
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # Push the version bump via the shared VERSION_BUMP_TOKEN PAT
+          # (fine-grained, contents:write). No GITHUB_TOKEN fallback: fail
+          # loudly if the secret is missing rather than silently downgrading
+          # to github-actions[bot] and hiding the misconfig.
+          token: ${{ secrets.VERSION_BUMP_TOKEN }}
+
+      - name: Bump patch version and push
+        run: |
+          set -euo pipefail
+          current=$(grep -oP 'set\(PROJECT_VER\s*"\K[^"]+' CMakeLists.txt)
+          IFS=. read -r major minor patch <<< "$current"
+          next="${major}.${minor}.$((patch + 1))"
+          echo "Bumping: $current -> $next"
+          sed -i -E "s/set\(PROJECT_VER[[:space:]]*\"[^\"]+\"\)/set(PROJECT_VER \"$next\")/" CMakeLists.txt
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CMakeLists.txt
+          git commit -m "chore: bump version to $next [skip ci]" \
+                     -m "Auto-bumped by create-release.yml after ${{ needs.build-and-release.outputs.tag }}." \
+                     -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+          git push origin HEAD:main
