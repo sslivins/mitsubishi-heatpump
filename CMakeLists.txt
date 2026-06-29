@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 # Bump this for releases — the create-release workflow tags v<PROJECT_VER>
-set(PROJECT_VER "0.1.0")
+set(PROJECT_VER "0.1.1")
 
 # Allow local overrides (WiFi creds, MQTT broker, etc.) — not checked into git.
 # Copy sdkconfig.defaults.local.example -> sdkconfig.defaults.local and edit.

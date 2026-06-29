@@ -1,14 +1,15 @@
-# Gzip the web assets at configure time so they can be embedded in flash.
-execute_process(
-    COMMAND python ${CMAKE_CURRENT_SOURCE_DIR}/web/gzip_html.py
-            ${CMAKE_CURRENT_SOURCE_DIR}/web/index.html
-            ${CMAKE_CURRENT_SOURCE_DIR}/web/index.html.gz
-)
-execute_process(
-    COMMAND python ${CMAKE_CURRENT_SOURCE_DIR}/web/gzip_html.py
-            ${CMAKE_CURRENT_SOURCE_DIR}/web/portal.html
-            ${CMAKE_CURRENT_SOURCE_DIR}/web/portal.html.gz
-)
+# Gzip the web assets so they can be embedded in flash.
+# execute_process runs at configure time to guarantee the .gz exists for the
+# initial EMBED_FILES resolution; the add_custom_command rules below re-gzip at
+# build time whenever the source HTML (or the gzip script) changes, so editing a
+# page and running `idf.py build` always re-embeds the latest markup.
+set(WEB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/web)
+foreach(page index portal)
+    execute_process(
+        COMMAND python ${WEB_DIR}/gzip_html.py
+                ${WEB_DIR}/${page}.html ${WEB_DIR}/${page}.html.gz
+    )
+endforeach()
 
 idf_component_register(
     SRCS "main.cpp"
@@ -24,3 +25,18 @@ idf_component_register(
              app_update esp_https_ota esp_http_client mbedtls
              cn105 m5pm1 hvac_mqtt
 )
+
+# Re-gzip at build time when the source HTML or the gzip script changes.
+foreach(page index portal)
+    add_custom_command(
+        OUTPUT ${WEB_DIR}/${page}.html.gz
+        COMMAND python ${WEB_DIR}/gzip_html.py
+                ${WEB_DIR}/${page}.html ${WEB_DIR}/${page}.html.gz
+        DEPENDS ${WEB_DIR}/${page}.html ${WEB_DIR}/gzip_html.py
+        COMMENT "Gzipping web/${page}.html"
+        VERBATIM
+    )
+endforeach()
+add_custom_target(web_assets DEPENDS
+    ${WEB_DIR}/index.html.gz ${WEB_DIR}/portal.html.gz)
+add_dependencies(${COMPONENT_LIB} web_assets)

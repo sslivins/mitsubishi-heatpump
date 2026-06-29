@@ -58,6 +58,15 @@ border-radius:8px;padding:8px 10px;margin-bottom:14px}
 .status.ok{background:#0d2a1c;color:#3fb950}
 .status.err{background:#2a0d0d;color:#f85149}
 .dim{opacity:.5;pointer-events:none}
+.hidden{display:none}
+.tabs{display:flex;gap:4px;margin-bottom:14px;background:#161b22;border:1px solid #21262d;
+border-radius:10px;padding:4px}
+.tab{flex:1;text-align:center;padding:9px 4px;font-size:.82em;color:#8b949e;border-radius:7px;
+cursor:pointer;user-select:none;transition:.15s}
+.tab:hover{color:#e6edf3}
+.tab.active{background:#e60012;color:#fff}
+.panel{display:none}
+.panel.active{display:block}
 </style>
 </head>
 <body>
@@ -71,6 +80,13 @@ border-radius:8px;padding:8px 10px;margin-bottom:14px}
     <span class="badge" id="bMqtt"><span class="dot"></span>MQTT</span>
   </div>
 
+  <div class="tabs">
+    <div class="tab active" data-tab="climate" onclick="showTab('climate')">Climate</div>
+    <div class="tab" data-tab="power" onclick="showTab('power')">Power</div>
+    <div class="tab" data-tab="system" onclick="showTab('system')">System</div>
+  </div>
+
+  <div class="panel active" id="panel-climate">
   <div class="note" id="stubNote">Protocol engine is in development — controls are wired
   end-to-end but the unit link is a stub until the CN105 packet engine lands.</div>
 
@@ -123,7 +139,9 @@ border-radius:8px;padding:8px 10px;margin-bottom:14px}
       </select>
     </div>
   </div>
+  </div><!-- /panel-climate -->
 
+  <div class="panel" id="panel-power">
   <div class="card">
     <h2>Power</h2>
     <div class="grid">
@@ -132,6 +150,20 @@ border-radius:8px;padding:8px 10px;margin-bottom:14px}
       <div class="stat"><div class="k">Source</div><div class="v" id="psrc">--</div></div>
       <div class="stat"><div class="k">Charging</div><div class="v" id="chg">--</div></div>
     </div>
+  </div>
+  </div><!-- /panel-power -->
+
+  <div class="panel" id="panel-system">
+  <div class="card">
+    <h2>System</h2>
+    <div class="grid">
+      <div class="stat"><div class="k">Firmware</div><div class="v" id="ver">--</div></div>
+      <div class="stat"><div class="k">IP</div><div class="v" id="ip">--</div></div>
+      <div class="stat"><div class="k">Uptime</div><div class="v" id="uptime">--</div></div>
+      <div class="stat"><div class="k">Free heap</div><div class="v" id="heap">--</div></div>
+    </div>
+    <button class="btn btn-warn" onclick="sysPost('/api/system/restart','Restart device?')">Restart</button>
+    <button class="btn btn-danger" onclick="sysPost('/api/system/factory_reset','Erase WiFi credentials and reboot into setup mode?')">Forget WiFi &amp; reset</button>
   </div>
 
   <div class="card">
@@ -149,23 +181,17 @@ border-radius:8px;padding:8px 10px;margin-bottom:14px}
     <button class="btn btn-warn" onclick="urlFw()">Pull &amp; flash</button>
     <div id="otaState" class="status hidden" style="margin-top:12px"></div>
   </div>
-
-  <div class="card">
-    <h2>System</h2>
-    <div class="grid">
-      <div class="stat"><div class="k">Firmware</div><div class="v" id="ver">--</div></div>
-      <div class="stat"><div class="k">IP</div><div class="v" id="ip">--</div></div>
-      <div class="stat"><div class="k">Uptime</div><div class="v" id="uptime">--</div></div>
-      <div class="stat"><div class="k">Free heap</div><div class="v" id="heap">--</div></div>
-    </div>
-    <button class="btn btn-warn" onclick="sysPost('/api/system/restart','Restart device?')">Restart</button>
-    <button class="btn btn-danger" onclick="sysPost('/api/system/factory_reset','Erase WiFi credentials and reboot into setup mode?')">Forget WiFi &amp; reset</button>
-  </div>
+  </div><!-- /panel-system -->
 </div>
 
 <script>
 function $(id){return document.getElementById(id)}
 let userEditing=false;
+
+function showTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
+  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id==='panel-'+name));
+}
 
 function badge(el,on){el.className='badge '+(on?'on':'off')}
 
