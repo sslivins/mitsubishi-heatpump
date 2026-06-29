@@ -13,8 +13,11 @@
 #include "cn105.h"
 #include "m5pm1.h"
 #include "hvac_mqtt.h"
+#include "web_ui.h"
+#include "ota.h"
 
 #include <cstdlib>
+#include <mutex>
 
 #include "esp_log.h"
 #include "esp_app_desc.h"
@@ -31,6 +34,27 @@ namespace {
 cn105::HeatPump g_hp;
 m5pm1::PMIC     g_pmic;
 
+// Latest PMIC telemetry, refreshed by pmic_task and read by the web server so
+// the HTTP task never touches the I2C bus directly.
+struct PowerSnap {
+    bool                present  = false;
+    uint16_t            vbat_mv  = 0;
+    uint16_t            vin_mv   = 0;
+    m5pm1::PowerSource  source   = m5pm1::PowerSource::UNKNOWN;
+    bool                charging = false;
+};
+std::mutex g_pwr_mtx;
+PowerSnap  g_pwr;
+
+const char* power_source_str(m5pm1::PowerSource s) {
+    switch (s) {
+        case m5pm1::PowerSource::VIN:     return "vin";
+        case m5pm1::PowerSource::VIN_OUT: return "vin_out";
+        case m5pm1::PowerSource::BATTERY: return "battery";
+        default:                          return "unknown";
+    }
+}
+
 // --- PMIC / charge-governor task (~1 Hz) ---
 void pmic_task(void*) {
     m5pm1::GovernorConfig gov{};
@@ -45,6 +69,16 @@ void pmic_task(void*) {
 #ifdef CONFIG_PMIC_CHARGE_GOVERNOR
             g_pmic.governor_tick(gov);
 #endif
+            PowerSnap snap;
+            snap.present = true;
+            g_pmic.read_vbat_mv(snap.vbat_mv);
+            g_pmic.read_vin_mv(snap.vin_mv);
+            g_pmic.read_power_source(snap.source);
+            // Best-effort: on external power and below target → likely charging.
+            snap.charging = (snap.source != m5pm1::PowerSource::BATTERY) &&
+                            (snap.vbat_mv < gov.vbat_target_mv);
+            std::lock_guard<std::mutex> lock(g_pwr_mtx);
+            g_pwr = snap;
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -84,6 +118,8 @@ void on_mqtt_command(const hvac_mqtt::Command& cmd) {
         case K::WideVane:    g_hp.setWideVaneSetting(cmd.value); break;
         case K::RemoteTemp:  g_hp.setRemoteTemperature(strtof(cmd.value.c_str(), nullptr)); break;
         case K::System:      ESP_LOGI(TAG, "system cmd: %s", cmd.value.c_str()); break;
+        case K::Ota:         ota::start_url(cmd.value); break;
+        case K::UpdateInstall: ota::install_latest(); break;
     }
 }
 
@@ -117,6 +153,8 @@ extern "C" void app_main() {
     }
     ESP_ERROR_CHECK(ret);
 
+    ota::init();
+
     // Power management first — it owns the battery/charge path.
     init_pmic();
     xTaskCreate(pmic_task, "pmic", 3072, nullptr, 5, nullptr);
@@ -129,6 +167,10 @@ extern "C" void app_main() {
     }
     ESP_LOGI(TAG, "WiFi up: %s", wifi::get_ip());
 
+    // We reached the network — the running image is healthy. Confirm it so the
+    // bootloader doesn't roll back a freshly-OTA'd slot on the next reset.
+    ota::mark_valid();
+
     // MQTT bridge.
     hvac_mqtt::Config mcfg{
         .broker_uri    = CONFIG_MQTT_BROKER_URI,
@@ -140,6 +182,43 @@ extern "C" void app_main() {
     if (hvac_mqtt::init(mcfg, on_mqtt_command) != ESP_OK) {
         ESP_LOGE(TAG, "MQTT init failed");
     }
+
+    // On-device web UI (REST + dashboard). Reuses on_mqtt_command so the web
+    // and MQTT control paths funnel through identical apply logic.
+    web_ui::Hooks hooks;
+    hooks.get_settings   = [] { return g_hp.getSettings(); };
+    hooks.get_status     = [] { return g_hp.getStatus(); };
+    hooks.unit_connected = [] { return g_hp.isConnected(); };
+    hooks.mqtt_connected = [] { return hvac_mqtt::is_connected(); };
+    hooks.apply_command  = [](const hvac_mqtt::Command& c) { on_mqtt_command(c); };
+    hooks.get_power = [] {
+        web_ui::PowerTelemetry t;
+        std::lock_guard<std::mutex> lock(g_pwr_mtx);
+        t.present  = g_pwr.present;
+        t.vbat_mv  = g_pwr.vbat_mv;
+        t.vin_mv   = g_pwr.vin_mv;
+        t.source   = power_source_str(g_pwr.source);
+        t.charging = g_pwr.charging;
+        return t;
+    };
+    if (web_ui::init(hooks) != ESP_OK) {
+        ESP_LOGW(TAG, "web UI failed to start");
+    }
+
+    // GitHub release auto-update: poll /releases/latest every 6h (and on demand
+    // from the web UI). Each completed check surfaces installed/latest versions
+    // to the web UI and to a Home Assistant `update` entity (with an Install
+    // button wired back to ota::install_latest()).
+    ota::set_on_update_changed([] {
+        static bool discovery_sent = false;
+        if (!discovery_sent) {
+            hvac_mqtt::publish_update_discovery();
+            discovery_sent = true;
+        }
+        ota::UpdateInfo u = ota::get_update_info();
+        hvac_mqtt::publish_update_state(u.current_version, u.latest_version, u.release_url);
+    });
+    ota::start_update_checker();
 
     // Heat pump protocol.
     xTaskCreate(cn105_task, "cn105", 4096, nullptr, 6, nullptr);

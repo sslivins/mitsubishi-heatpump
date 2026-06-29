@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mitsubishi Heat Pump — WiFi Setup</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:#0e1116;color:#e6edf3;
+min-height:100vh;display:flex;justify-content:center;align-items:flex-start;padding:20px}
+.card{background:#161b22;border-radius:12px;padding:24px;width:100%;max-width:400px;
+box-shadow:0 4px 24px rgba(0,0,0,.5);margin-top:20px;border:1px solid #21262d}
+h1{font-size:1.25em;text-align:center;margin-bottom:4px;color:#e60012}
+.sub{text-align:center;font-size:.85em;color:#8b949e;margin-bottom:18px}
+button{cursor:pointer;border:none;border-radius:8px;padding:10px 16px;font-size:.95em;
+width:100%;transition:background .2s}
+.btn-scan{background:#21262d;color:#e6edf3;margin-bottom:14px;border:1px solid #30363d}
+.btn-scan:hover{background:#30363d}
+.btn-connect{background:#e60012;color:#fff;font-weight:600;margin-top:10px}
+.btn-connect:hover{background:#c40010}
+.btn-connect:disabled{background:#555;cursor:not-allowed}
+.net-list{list-style:none;max-height:220px;overflow-y:auto;margin-bottom:14px;
+border:1px solid #30363d;border-radius:8px}
+.net-list li{padding:10px 14px;cursor:pointer;display:flex;justify-content:space-between;
+align-items:center;border-bottom:1px solid #30363d;transition:background .15s}
+.net-list li:last-child{border-bottom:none}
+.net-list li:hover,.net-list li.sel{background:#21262d}
+.net-list li.sel{outline:2px solid #e60012}
+.ssid-name{font-weight:500;word-break:break-all}
+.rssi{font-size:.8em;color:#8b949e;white-space:nowrap;margin-left:8px}
+.lock::before{content:"🔒";font-size:.7em;margin-right:4px}
+input[type=password],input[type=text]{width:100%;padding:10px 14px;border-radius:8px;
+border:1px solid #30363d;background:#0e1116;color:#e6edf3;font-size:.95em;
+margin-top:8px;outline:none}
+input:focus{border-color:#e60012}
+label{font-size:.85em;color:#8b949e;display:block;margin-top:14px}
+.status{text-align:center;padding:12px;border-radius:8px;margin-top:14px;font-size:.9em}
+.status.info{background:#21262d;color:#58a6ff}
+.status.ok{background:#0d2a1c;color:#3fb950}
+.status.err{background:#2a0d0d;color:#f85149}
+.spin{display:inline-block;width:16px;height:16px;border:2px solid #e60012;
+border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;
+vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Mitsubishi Heat Pump</h1>
+  <p class="sub">WiFi Setup</p>
+
+  <button class="btn-scan" id="scanBtn" onclick="doScan()">Scan for Networks</button>
+
+  <ul class="net-list hidden" id="netList"></ul>
+
+  <div id="passGroup" class="hidden">
+    <label for="wifikey">WiFi Passphrase</label>
+    <input type="text" id="wifikey" placeholder="Enter passphrase" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="-webkit-text-security:disc">
+  </div>
+
+  <button class="btn-connect hidden" id="connBtn" onclick="doConnect()" disabled>Connect</button>
+
+  <div id="status" class="hidden"></div>
+</div>
+
+<script>
+let selSSID='', selAuth=0;
+
+function $(id){return document.getElementById(id)}
+
+function showStatus(msg,cls){
+  const el=$('status');
+  el.className='status '+cls;
+  el.innerHTML=msg;
+  el.classList.remove('hidden');
+}
+
+async function doScan(){
+  $('scanBtn').disabled=true;
+  $('scanBtn').innerHTML='<span class="spin"></span> Scanning…';
+  $('netList').classList.add('hidden');
+  $('status').classList.add('hidden');
+  try{
+    const r=await fetch('/api/scan');
+    const nets=await r.json();
+    const ul=$('netList');
+    ul.innerHTML='';
+    if(!nets.length){
+      showStatus('No networks found. Try again.','info');
+      return;
+    }
+    const map=new Map();
+    nets.forEach(n=>{
+      if(!n.ssid)return;
+      if(!map.has(n.ssid)||n.rssi>map.get(n.ssid).rssi)
+        map.set(n.ssid,n);
+    });
+    const sorted=[...map.values()].sort((a,b)=>b.rssi-a.rssi);
+    sorted.forEach(n=>{
+      const li=document.createElement('li');
+      const bars=n.rssi>-50?'▂▄▆█':n.rssi>-65?'▂▄▆':n.rssi>-75?'▂▄':'▂';
+      li.innerHTML=`<span class="ssid-name">${n.auth>0?'<span class="lock"></span>':''}${esc(n.ssid)}</span><span class="rssi">${bars} ${n.rssi}dBm</span>`;
+      li.onclick=()=>selectNet(n.ssid,n.auth,li);
+      ul.appendChild(li);
+    });
+    ul.classList.remove('hidden');
+    $('connBtn').classList.remove('hidden');
+  }catch(e){
+    showStatus('Scan failed: '+e.message,'err');
+  }finally{
+    $('scanBtn').disabled=false;
+    $('scanBtn').textContent='Scan for Networks';
+  }
+}
+
+function selectNet(ssid,auth,li){
+  selSSID=ssid; selAuth=auth;
+  document.querySelectorAll('.net-list li').forEach(l=>l.classList.remove('sel'));
+  li.classList.add('sel');
+  if(auth>0){
+    $('passGroup').classList.remove('hidden');
+    $('wifikey').value='';
+    $('wifikey').focus();
+  }else{
+    $('passGroup').classList.add('hidden');
+  }
+  $('connBtn').disabled=false;
+}
+
+async function doConnect(){
+  if(!selSSID)return;
+  const pass=selAuth>0?$('wifikey').value:'';
+  if(selAuth>0&&!pass){
+    showStatus('Please enter the passphrase','err');
+    return;
+  }
+  $('connBtn').disabled=true;
+  showStatus('<span class="spin"></span> Saving credentials & rebooting…','info');
+  try{
+    await fetch('/api/connect',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ssid:selSSID,pass:pass})
+    });
+    showStatus('Credentials saved! Device is rebooting.<br>Reconnect to your normal WiFi.','ok');
+  }catch(e){
+    showStatus('Device is rebooting…','ok');
+  }
+}
+
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+
+window.addEventListener('load',()=>setTimeout(doScan,500));
+</script>
+</body>
+</html>

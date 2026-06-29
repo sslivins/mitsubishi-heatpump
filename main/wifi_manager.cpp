@@ -2,6 +2,7 @@
 /// @brief WiFi STA bring-up + SoftAP provisioning fallback.
 
 #include "wifi_manager.h"
+#include "dns_server.h"
 
 #include <cstring>
 #include <cstdio>
@@ -9,11 +10,19 @@
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
+#include "esp_mac.h"
+#include "esp_http_server.h"
+#include "mdns.h"
+#include "cJSON.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
 #include "sdkconfig.h"
+
+// Embedded gzip'd captive-portal page (produced at configure time).
+extern const uint8_t portal_html_gz_start[] asm("_binary_portal_html_gz_start");
+extern const uint8_t portal_html_gz_end[]   asm("_binary_portal_html_gz_end");
 
 namespace wifi {
 
@@ -29,6 +38,10 @@ Mode  s_mode = Mode::IDLE;
 char  s_ip[16] = "0.0.0.0";
 char  s_ap_name[33] = {0};
 int   s_retries = 0;
+
+httpd_handle_t s_portal = nullptr;
+wifi_ap_record_t s_scan[20];
+uint16_t s_scan_count = 0;
 
 bool load_creds(char* ssid, size_t ssid_len, char* pass, size_t pass_len) {
     nvs_handle_t h;
@@ -63,9 +76,97 @@ void on_event(void*, esp_event_base_t base, int32_t id, void* data) {
     }
 }
 
+// ── mDNS (called once STA is connected) ────────────────────────────────
+void start_mdns() {
+    if (mdns_init() != ESP_OK) return;
+    mdns_hostname_set(CONFIG_MDNS_HOSTNAME);
+    mdns_instance_name_set("Mitsubishi Heat Pump");
+    mdns_service_add(nullptr, "_http", "_tcp", 80, nullptr, 0);
+    ESP_LOGI(TAG, "mDNS: %s.local", CONFIG_MDNS_HOSTNAME);
+}
+
+// ── Captive-portal HTTP handlers ───────────────────────────────────────
+esp_err_t portal_page(httpd_req_t* req) {
+    size_t len = (size_t)(portal_html_gz_end - portal_html_gz_start);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    return httpd_resp_send(req, (const char*)portal_html_gz_start, len);
+}
+
+// OS captive-portal probes → 302 to the portal so the setup page pops up.
+esp_err_t captive_redirect(httpd_req_t* req) {
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+    httpd_resp_send(req, nullptr, 0);
+    return ESP_OK;
+}
+
+// GET /api/scan — blocking scan, returns [{ssid,rssi,auth}].
+esp_err_t portal_scan(httpd_req_t* req) {
+    wifi_scan_config_t scan_cfg = {};
+    esp_wifi_scan_start(&scan_cfg, true);
+    s_scan_count = sizeof(s_scan) / sizeof(s_scan[0]);
+    esp_wifi_scan_get_ap_records(&s_scan_count, s_scan);
+
+    cJSON* arr = cJSON_CreateArray();
+    for (int i = 0; i < s_scan_count; i++) {
+        cJSON* o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "ssid", (char*)s_scan[i].ssid);
+        cJSON_AddNumberToObject(o, "rssi", s_scan[i].rssi);
+        cJSON_AddNumberToObject(o, "auth", s_scan[i].authmode);
+        cJSON_AddItemToArray(arr, o);
+    }
+    char* str = cJSON_PrintUnformatted(arr);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(arr);
+    return ESP_OK;
+}
+
+// POST /api/connect — { "ssid": "...", "pass": "..." } → save + reboot.
+esp_err_t portal_connect(httpd_req_t* req) {
+    char buf[256] = {};
+    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+        return ESP_FAIL;
+    }
+    cJSON* json = cJSON_Parse(buf);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    cJSON* jssid = cJSON_GetObjectItem(json, "ssid");
+    cJSON* jpass = cJSON_GetObjectItem(json, "pass");
+    if (!jssid || !cJSON_IsString(jssid) || strlen(jssid->valuestring) == 0) {
+        cJSON_Delete(json);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing ssid");
+        return ESP_FAIL;
+    }
+    const char* ssid = jssid->valuestring;
+    const char* pass = (jpass && cJSON_IsString(jpass)) ? jpass->valuestring : "";
+
+    ESP_LOGI(TAG, "portal: saving creds for '%s' and rebooting", ssid);
+    save_credentials(ssid, pass);
+    cJSON_Delete(json);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"status\":\"saved\",\"message\":\"Rebooting…\"}");
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    esp_restart();
+    return ESP_OK;  // unreachable
+}
+
 esp_err_t start_provisioning() {
     s_mode = Mode::PROVISIONING;
-    std::snprintf(s_ap_name, sizeof(s_ap_name), "%s-setup", CONFIG_MDNS_HOSTNAME);
+
+    // AP name carries the last 2 MAC bytes so multiple units are distinct.
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+    std::snprintf(s_ap_name, sizeof(s_ap_name), "%s-%02X%02X",
+                  CONFIG_MDNS_HOSTNAME, mac[4], mac[5]);
 
     esp_netif_create_default_wifi_ap();
 
@@ -73,16 +174,43 @@ esp_err_t start_provisioning() {
     strlcpy(reinterpret_cast<char*>(ap.ap.ssid), s_ap_name, sizeof(ap.ap.ssid));
     ap.ap.ssid_len = std::strlen(s_ap_name);
     ap.ap.channel = 1;
-    ap.ap.max_connection = 2;
+    ap.ap.max_connection = 4;
     ap.ap.authmode = WIFI_AUTH_OPEN;
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    // APSTA so we can scan for networks while serving the portal.
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGW(TAG, "provisioning SoftAP '%s' up — connect to set credentials", s_ap_name);
-    // TODO: serve a captive-portal page (port arctic-sniffer dns_server + portal
-    // HTML) that calls wifi::save_credentials() then reboots.
+    start_dns_server();
+
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    cfg.max_uri_handlers = 16;
+    cfg.stack_size = 8192;
+    cfg.uri_match_fn = httpd_uri_match_wildcard;
+
+    if (httpd_start(&s_portal, &cfg) == ESP_OK) {
+        const httpd_uri_t page = {"/", HTTP_GET, portal_page, nullptr};
+        httpd_register_uri_handler(s_portal, &page);
+        const httpd_uri_t scan = {"/api/scan", HTTP_GET, portal_scan, nullptr};
+        httpd_register_uri_handler(s_portal, &scan);
+        const httpd_uri_t conn = {"/api/connect", HTTP_POST, portal_connect, nullptr};
+        httpd_register_uri_handler(s_portal, &conn);
+
+        static const char* probes[] = {
+            "/generate_204", "/gen_204", "/hotspot-detect.html",
+            "/library/test/success.html", "/connecttest.txt",
+            "/redirect", "/ncsi.txt",
+        };
+        for (auto* p : probes) {
+            const httpd_uri_t r = {p, HTTP_GET, captive_redirect, nullptr};
+            httpd_register_uri_handler(s_portal, &r);
+        }
+        const httpd_uri_t catchall = {"/*", HTTP_GET, captive_redirect, nullptr};
+        httpd_register_uri_handler(s_portal, &catchall);
+
+        ESP_LOGW(TAG, "captive portal up at http://192.168.4.1/ (SSID '%s')", s_ap_name);
+    }
     return ESP_ERR_NOT_FINISHED;
 }
 }  // namespace
@@ -124,6 +252,7 @@ esp_err_t init() {
     if (bits & kConnectedBit) {
         s_mode = Mode::CONNECTED;
         ESP_LOGI(TAG, "connected, IP %s", s_ip);
+        start_mdns();
         return ESP_OK;
     }
 
