@@ -262,6 +262,7 @@ async function refresh(){
     badge($('bUnit'),s.unit_connected);
     badge($('bMqtt'),s.mqtt_connected);
     $('subtitle').textContent=s.hostname+' · '+s.ip;
+    document.title=s.hostname||'Mitsubishi Heat Pump';
     $('hdrver').textContent='firmware v'+s.version;
     $('ver').textContent=s.version;
     $('ip').textContent=s.ip;
