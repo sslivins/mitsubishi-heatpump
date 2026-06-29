@@ -167,6 +167,17 @@ cursor:pointer;user-select:none;transition:.15s}
   </div>
 
   <div class="card">
+    <h2>Software update</h2>
+    <div class="grid">
+      <div class="stat"><div class="k">Installed</div><div class="v" id="updCur">--</div></div>
+      <div class="stat"><div class="k">Latest (GitHub)</div><div class="v" id="updLatest">--</div></div>
+    </div>
+    <div id="updMsg" class="status hidden" style="margin:10px 0"></div>
+    <button class="btn" id="updCheckBtn" onclick="checkUpdate()">Check for updates</button>
+    <button class="btn btn-warn hidden" id="updInstallBtn" onclick="installUpdate()">Install update</button>
+  </div>
+
+  <div class="card">
     <h2>Firmware update</h2>
     <div class="row">
       <label>Upload .bin</label>
@@ -300,8 +311,48 @@ async function pollOta(){
   }catch(e){otaMsg('Device rebooting…','ok')}
 }
 
+// ── GitHub software update ─────────────────────────────────────────────
+function updMsg(m,cls){const el=$('updMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
+
+async function refreshUpdate(){
+  try{
+    const u=await (await fetch('/api/update')).json();
+    $('updCur').textContent=u.current||'--';
+    $('updLatest').textContent=u.checked?(u.latest||'--'):(u.checking?'checking…':'—');
+    $('updCheckBtn').disabled=u.checking;
+    $('updCheckBtn').textContent=u.checking?'Checking…':'Check for updates';
+    const inst=$('updInstallBtn');
+    if(u.update_available){
+      inst.classList.remove('hidden');
+      updMsg('Update available: '+u.latest,'info');
+    }else{
+      inst.classList.add('hidden');
+      if(u.error) updMsg('Check failed: '+u.error,'err');
+      else if(u.checked) updMsg('Up to date','ok');
+    }
+  }catch(e){}
+}
+
+async function checkUpdate(){
+  updMsg('Checking GitHub…','info');
+  try{await fetch('/api/update/check',{method:'POST'})}catch(e){}
+  // The check runs in the background; poll a few times for the result.
+  let n=0;const iv=setInterval(async()=>{await refreshUpdate();if(++n>=8)clearInterval(iv)},1500);
+}
+
+async function installUpdate(){
+  if(!confirm('Download and install the latest firmware? The device will reboot.'))return;
+  try{
+    const r=await fetch('/api/update/install',{method:'POST'});
+    if(r.ok){updMsg('Download started…','info');setTimeout(pollOta,1000)}
+    else updMsg('Update unavailable or busy','err');
+  }catch(e){updMsg('Request failed','err')}
+}
+
 refresh();
 setInterval(refresh,5000);
+refreshUpdate();
+setInterval(refreshUpdate,30000);
 </script>
 </body>
 </html>

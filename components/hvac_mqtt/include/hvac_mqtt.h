@@ -7,9 +7,11 @@
 ///   Base:        <base_topic>/<friendly_name>
 ///   Subscribe:   .../mode/set .../temp/set .../remote_temp/set .../fan/set
 ///                .../vane/set .../wideVane/set .../system/set .../ota/set
+///                .../update/install
 ///   Publish:     .../state (retained) .../settings .../availability (LWT)
-///                .../debug/packets .../debug/logs
+///                .../update/state (retained)
 ///   HA discovery: homeassistant/climate/<friendly_name>/config (retained)
+///                 homeassistant/update/<friendly_name>/config (retained)
 ///
 /// Uses esp-mqtt (esp_mqtt). LWT marks the unit unavailable instantly on a
 /// power blip — ideal for the battery-buffered Stamp-S3Bat.
@@ -35,7 +37,7 @@ struct Config {
 
 /// A command parsed from a .../*/set topic, to be applied to the heat pump.
 struct Command {
-    enum class Kind { Power, Mode, Temperature, Fan, Vane, WideVane, RemoteTemp, System, Ota };
+    enum class Kind { Power, Mode, Temperature, Fan, Vane, WideVane, RemoteTemp, System, Ota, UpdateInstall };
     Kind kind;
     std::string value;  ///< raw payload (e.g. "HEAT", "21.5", "AUTO")
 };
@@ -57,6 +59,20 @@ esp_err_t publish_settings(const cn105::Settings& s);
 /// Publish availability ("online"/"offline"). "offline" is also the retained
 /// LWT the broker sends automatically when the device drops.
 esp_err_t publish_availability(bool online);
+
+/// Publish the Home Assistant MQTT-discovery config for a firmware `update`
+/// entity (retained) to homeassistant/update/<friendly_name>/config. HA shows
+/// an "update available" badge and an Install button wired to .../update/install.
+/// Call once after the first successful connect.
+esp_err_t publish_update_discovery();
+
+/// Publish the firmware update state (retained) as JSON to .../update/state:
+/// {"installed_version","latest_version","release_url","release_summary"}.
+/// HA flags an update when latest_version > installed_version.
+esp_err_t publish_update_state(const std::string& installed,
+                               const std::string& latest,
+                               const std::string& release_url = "",
+                               const std::string& release_summary = "");
 
 bool is_connected();
 

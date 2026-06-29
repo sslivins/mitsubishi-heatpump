@@ -119,6 +119,7 @@ void on_mqtt_command(const hvac_mqtt::Command& cmd) {
         case K::RemoteTemp:  g_hp.setRemoteTemperature(strtof(cmd.value.c_str(), nullptr)); break;
         case K::System:      ESP_LOGI(TAG, "system cmd: %s", cmd.value.c_str()); break;
         case K::Ota:         ota::start_url(cmd.value); break;
+        case K::UpdateInstall: ota::install_latest(); break;
     }
 }
 
@@ -203,6 +204,21 @@ extern "C" void app_main() {
     if (web_ui::init(hooks) != ESP_OK) {
         ESP_LOGW(TAG, "web UI failed to start");
     }
+
+    // GitHub release auto-update: poll /releases/latest every 6h (and on demand
+    // from the web UI). Each completed check surfaces installed/latest versions
+    // to the web UI and to a Home Assistant `update` entity (with an Install
+    // button wired back to ota::install_latest()).
+    ota::set_on_update_changed([] {
+        static bool discovery_sent = false;
+        if (!discovery_sent) {
+            hvac_mqtt::publish_update_discovery();
+            discovery_sent = true;
+        }
+        ota::UpdateInfo u = ota::get_update_info();
+        hvac_mqtt::publish_update_state(u.current_version, u.latest_version, u.release_url);
+    });
+    ota::start_update_checker();
 
     // Heat pump protocol.
     xTaskCreate(cn105_task, "cn105", 4096, nullptr, 6, nullptr);

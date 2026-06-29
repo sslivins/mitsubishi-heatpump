@@ -278,6 +278,47 @@ esp_err_t handle_ota_status(httpd_req_t* req) {
     return ESP_OK;
 }
 
+// ── GET /api/update — cached GitHub release check result ───────────────
+esp_err_t handle_update_get(httpd_req_t* req) {
+    set_cors(req);
+    ota::UpdateInfo u = ota::get_update_info();
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "current", u.current_version.c_str());
+    cJSON_AddStringToObject(root, "latest", u.latest_version.c_str());
+    cJSON_AddBoolToObject(root, "update_available", u.update_available);
+    cJSON_AddBoolToObject(root, "checking", u.checking);
+    cJSON_AddBoolToObject(root, "checked", u.checked);
+    cJSON_AddStringToObject(root, "published_at", u.published_at.c_str());
+    cJSON_AddStringToObject(root, "release_url", u.release_url.c_str());
+    cJSON_AddStringToObject(root, "error", u.error.c_str());
+    char* str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// ── POST /api/update/check — trigger an immediate GitHub poll ──────────
+esp_err_t handle_update_check(httpd_req_t* req) {
+    set_cors(req);
+    ota::check_now();
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"checking\"}");
+}
+
+// ── POST /api/update/install — install the latest GitHub release ───────
+esp_err_t handle_update_install(httpd_req_t* req) {
+    set_cors(req);
+    esp_err_t err = ota::install_latest();
+    httpd_resp_set_type(req, "application/json");
+    if (err != ESP_OK) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"status\":\"unavailable\"}");
+    }
+    return httpd_resp_sendstr(req, "{\"status\":\"started\"}");
+}
+
 // ── OPTIONS /api/* (CORS preflight) ────────────────────────────────────
 esp_err_t handle_options(httpd_req_t* req) {
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -294,7 +335,7 @@ esp_err_t init(const Hooks& hooks) {
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn = httpd_uri_match_wildcard;
-    cfg.max_uri_handlers = 12;
+    cfg.max_uri_handlers = 16;
     cfg.stack_size = 8192;
     cfg.lru_purge_enable = true;
 
@@ -312,6 +353,9 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/ota",                 HTTP_POST,    handle_ota_upload,     nullptr},
         {"/api/ota/url",             HTTP_POST,    handle_ota_url,        nullptr},
         {"/api/ota/status",          HTTP_GET,     handle_ota_status,     nullptr},
+        {"/api/update",              HTTP_GET,     handle_update_get,     nullptr},
+        {"/api/update/check",        HTTP_POST,    handle_update_check,   nullptr},
+        {"/api/update/install",      HTTP_POST,    handle_update_install, nullptr},
         {"/api/system/restart",      HTTP_POST,    handle_restart,        nullptr},
         {"/api/system/factory_reset",HTTP_POST,    handle_factory_reset,  nullptr},
         {"/api/*",                   HTTP_OPTIONS, handle_options,        nullptr},

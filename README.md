@@ -57,9 +57,9 @@ Base: `<base_topic>/<friendly_name>`
 
 | Direction | Topic suffix |
 |-----------|--------------|
-| subscribe | `/mode/set` `/temp/set` `/remote_temp/set` `/fan/set` `/vane/set` `/wideVane/set` `/system/set` `/ota/set` |
-| publish | `/state` (retained) `/settings` `/availability` (LWT) `/debug/packets` `/debug/logs` |
-| discovery | `homeassistant/climate/<friendly_name>/config` (retained) |
+| subscribe | `/mode/set` `/temp/set` `/remote_temp/set` `/fan/set` `/vane/set` `/wideVane/set` `/system/set` `/ota/set` `/update/install` |
+| publish | `/state` (retained) `/settings` `/availability` (LWT) `/update/state` (retained) `/debug/packets` `/debug/logs` |
+| discovery | `homeassistant/climate/<friendly_name>/config` (retained) `homeassistant/update/<friendly_name>/config` (retained) |
 
 ## Build / flash
 
@@ -97,6 +97,9 @@ path. The same JSON API backs it:
 | `POST` | `/api/settings` | apply any subset of `{power,mode,temperature,fan,vane,wideVane,remoteTemp}` |
 | `POST` | `/api/system/restart` | reboot |
 | `POST` | `/api/system/factory_reset` | erase WiFi creds + reboot into setup |
+| `GET`  | `/api/update` | cached GitHub release check `{current,latest,update_available,checking,checked,release_url,error}` |
+| `POST` | `/api/update/check` | trigger an immediate GitHub `/releases/latest` poll (background) |
+| `POST` | `/api/update/install` | download + flash the latest release (if newer) |
 
 Web commands reuse `hvac_mqtt::Command`, so the web and MQTT control paths
 funnel through identical apply logic in `main.cpp`.
@@ -113,6 +116,27 @@ pipeline (`main/ota.cpp`):
   or `POST /api/ota/url` `{"url":"…"}`; it downloads + flashes in the background.
   `GET /api/ota/status` reports `{state,progress,message}`.
 - **MQTT** — publish the firmware URL to `<base>/<friendly_name>/ota/set`.
+
+### GitHub release auto-update
+
+A background poller (`ota::start_update_checker`) hits
+`https://api.github.com/repos/sslivins/mitsubishi-heatpump/releases/latest`
+every 6 h (and on demand via `POST /api/update/check`), compares the latest
+release tag against the running version, and exposes the result two ways:
+
+- **Web UI** — the System tab's *Software update* card shows installed/latest
+  versions, a **Check for updates** button, and a one-click **Install update**
+  button (which downloads the release's `mitsubishi-heatpump*.bin` asset through
+  GitHub's CDN redirect — see the enlarged HTTP buffers in `ota.cpp`).
+- **Home Assistant** — a native MQTT `update` entity
+  (`homeassistant/update/<friendly_name>/config`) reports installed/latest
+  versions to `.../update/state`; HA shows an *update available* badge and an
+  **Install** button that publishes `install` to `.../update/install`, routed to
+  `ota::install_latest()`.
+
+`/releases/latest` ignores drafts **and pre-releases**, so only full releases
+(cut by `create-release.yml` with `draft:false`) are offered; the device reports
+*"no published release yet"* until one exists.
 
 Rollback safety: a freshly-booted OTA image starts in `PENDING_VERIFY`; the
 firmware calls `esp_ota_mark_app_valid_cancel_rollback()` once WiFi reconnects,

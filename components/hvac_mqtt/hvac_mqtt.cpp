@@ -12,6 +12,7 @@
 #include <utility>
 #include "esp_log.h"
 #include "mqtt_client.h"
+#include "cJSON.h"
 
 namespace hvac_mqtt {
 
@@ -38,6 +39,7 @@ bool topic_to_kind(const std::string& topic, Command::Kind& kind) {
         {"/wideVane/set",    Command::Kind::WideVane},
         {"/system/set",      Command::Kind::System},
         {"/ota/set",         Command::Kind::Ota},
+        {"/update/install",  Command::Kind::UpdateInstall},
     };
     for (const auto& m : kMap) {
         if (topic == g_base + m.suffix) { kind = m.kind; return true; }
@@ -49,6 +51,7 @@ void subscribe_all() {
     const char* suffixes[] = {
         "/mode/set", "/temp/set", "/remote_temp/set", "/fan/set",
         "/vane/set", "/wideVane/set", "/system/set", "/ota/set",
+        "/update/install",
     };
     for (const char* s : suffixes) {
         std::string topic = g_base + s;
@@ -112,6 +115,71 @@ esp_err_t publish_availability(bool online) {
     std::string topic = t("/availability");
     const char* msg = online ? "online" : "offline";
     int id = esp_mqtt_client_publish(g_client, topic.c_str(), msg, 0, 1, true);
+    return id < 0 ? ESP_FAIL : ESP_OK;
+}
+
+esp_err_t publish_update_discovery() {
+    if (!g_client) return ESP_ERR_INVALID_STATE;
+
+    std::string state_topic   = t("/update/state");
+    std::string command_topic = t("/update/install");
+    std::string avail_topic   = t("/availability");
+    std::string unique_id     = g_cfg.friendly_name + "_firmware";
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "name", "Firmware");
+    cJSON_AddStringToObject(root, "unique_id", unique_id.c_str());
+    cJSON_AddStringToObject(root, "object_id", unique_id.c_str());
+    cJSON_AddStringToObject(root, "state_topic", state_topic.c_str());
+    cJSON_AddStringToObject(root, "command_topic", command_topic.c_str());
+    cJSON_AddStringToObject(root, "payload_install", "install");
+    cJSON_AddStringToObject(root, "device_class", "firmware");
+    // state_topic carries JSON; let HA pull installed/latest straight from it.
+    cJSON_AddStringToObject(root, "value_template", "{{ value_json.installed_version }}");
+    cJSON_AddStringToObject(root, "latest_version_template", "{{ value_json.latest_version }}");
+    cJSON_AddStringToObject(root, "availability_topic", avail_topic.c_str());
+    cJSON_AddStringToObject(root, "payload_available", "online");
+    cJSON_AddStringToObject(root, "payload_not_available", "offline");
+
+    cJSON* dev = cJSON_CreateObject();
+    cJSON* ids = cJSON_CreateArray();
+    cJSON_AddItemToArray(ids, cJSON_CreateString(g_cfg.friendly_name.c_str()));
+    cJSON_AddItemToObject(dev, "identifiers", ids);
+    cJSON_AddStringToObject(dev, "name", g_cfg.friendly_name.c_str());
+    cJSON_AddStringToObject(dev, "manufacturer", "Mitsubishi");
+    cJSON_AddStringToObject(dev, "model", "CN105 heat-pump bridge");
+    cJSON_AddItemToObject(root, "device", dev);
+
+    char* payload = cJSON_PrintUnformatted(root);
+    std::string topic = "homeassistant/update/" + g_cfg.friendly_name + "/config";
+    int id = payload ? esp_mqtt_client_publish(g_client, topic.c_str(), payload, 0, 1, true) : -1;
+    ESP_LOGI(TAG, "publish_update_discovery -> %s", topic.c_str());
+    if (payload) cJSON_free(payload);
+    cJSON_Delete(root);
+    return id < 0 ? ESP_FAIL : ESP_OK;
+}
+
+esp_err_t publish_update_state(const std::string& installed,
+                               const std::string& latest,
+                               const std::string& release_url,
+                               const std::string& release_summary) {
+    if (!g_client) return ESP_ERR_INVALID_STATE;
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "installed_version", installed.c_str());
+    // Until a check completes, report latest == installed so HA shows "up to date".
+    cJSON_AddStringToObject(root, "latest_version",
+                            latest.empty() ? installed.c_str() : latest.c_str());
+    if (!release_url.empty())
+        cJSON_AddStringToObject(root, "release_url", release_url.c_str());
+    if (!release_summary.empty())
+        cJSON_AddStringToObject(root, "release_summary", release_summary.c_str());
+
+    char* payload = cJSON_PrintUnformatted(root);
+    std::string topic = t("/update/state");
+    int id = payload ? esp_mqtt_client_publish(g_client, topic.c_str(), payload, 0, 1, true) : -1;
+    if (payload) cJSON_free(payload);
+    cJSON_Delete(root);
     return id < 0 ? ESP_FAIL : ESP_OK;
 }
 
