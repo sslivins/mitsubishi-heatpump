@@ -11,6 +11,7 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "esp_mac.h"
+#include "esp_app_desc.h"
 #include "esp_http_server.h"
 #include "mdns.h"
 #include "cJSON.h"
@@ -37,6 +38,8 @@ EventGroupHandle_t s_events = nullptr;
 Mode  s_mode = Mode::IDLE;
 char  s_ip[16] = "0.0.0.0";
 char  s_ap_name[33] = {0};
+char  s_ssid[33] = {0};
+char  s_pass[65] = {0};
 int   s_retries = 0;
 
 httpd_handle_t s_portal = nullptr;
@@ -77,12 +80,33 @@ void on_event(void*, esp_event_base_t base, int32_t id, void* data) {
 }
 
 // ── mDNS (called once STA is connected) ────────────────────────────────
+// A unique hostname avoids ".local" collisions, but on its own it is not
+// discoverable (nobody knows the suffix to type). So we also advertise a
+// DNS-SD "_http._tcp" service with a unique instance name and TXT metadata —
+// the standard Zeroconf/Bonjour pattern (ESPHome/Shelly/printers) that lets a
+// controller browse and list every unit without guessing hostnames.
 void start_mdns() {
     if (mdns_init() != ESP_OK) return;
-    mdns_hostname_set(CONFIG_MDNS_HOSTNAME);
-    mdns_instance_name_set("Mitsubishi Heat Pump");
-    mdns_service_add(nullptr, "_http", "_tcp", 80, nullptr, 0);
-    ESP_LOGI(TAG, "mDNS: %s.local", CONFIG_MDNS_HOSTNAME);
+
+    std::string uid      = device_uid();
+    std::string host     = mdns_hostname();
+    std::string instance = std::string("Mitsubishi Heat Pump ") + uid;
+    const char* fw       = esp_app_get_description()->version;
+
+    mdns_hostname_set(host.c_str());
+    mdns_instance_name_set(instance.c_str());
+
+    mdns_txt_item_t txt[] = {
+        {"id",    uid.c_str()},
+        {"fw",    fw},
+        {"model", "stamp-s3"},
+        {"path",  "/"},
+    };
+    mdns_service_add(nullptr, "_http", "_tcp", 80, txt,
+                     sizeof(txt) / sizeof(txt[0]));
+
+    ESP_LOGI(TAG, "mDNS: %s.local  (_http._tcp instance '%s')",
+             host.c_str(), instance.c_str());
 }
 
 // ── Captive-portal HTTP handlers ───────────────────────────────────────
@@ -162,11 +186,10 @@ esp_err_t portal_connect(httpd_req_t* req) {
 esp_err_t start_provisioning() {
     s_mode = Mode::PROVISIONING;
 
-    // AP name carries the last 2 MAC bytes so multiple units are distinct.
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
-    std::snprintf(s_ap_name, sizeof(s_ap_name), "%s-%02X%02X",
-                  CONFIG_MDNS_HOSTNAME, mac[4], mac[5]);
+    // AP name carries the device_uid so multiple units are distinct and the
+    // SoftAP, mDNS hostname and MQTT node all share one suffix.
+    std::snprintf(s_ap_name, sizeof(s_ap_name), "%s-%s",
+                  CONFIG_MDNS_HOSTNAME, device_uid().c_str());
 
     esp_netif_create_default_wifi_ap();
 
@@ -215,6 +238,23 @@ esp_err_t start_provisioning() {
 }
 }  // namespace
 
+// ── Identity (public) ──────────────────────────────────────────────────
+// Short, stable per-chip id from the low 2 bytes of the factory base MAC
+// (Espressif assigns every chip a globally-unique MAC, so this is collision-free
+// for a handful of units). Reused for the SoftAP name, the mDNS hostname, and the
+// default MQTT friendly_name so all three are unique and consistent.
+std::string device_uid() {
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char buf[5];
+    std::snprintf(buf, sizeof(buf), "%02X%02X", mac[4], mac[5]);
+    return std::string(buf);
+}
+
+std::string mdns_hostname() {
+    return std::string(CONFIG_MDNS_HOSTNAME) + "-" + device_uid();
+}
+
 esp_err_t init() {
     s_events = xEventGroupCreate();
     ESP_ERROR_CHECK(esp_netif_init());
@@ -232,6 +272,8 @@ esp_err_t init() {
         ESP_LOGW(TAG, "no credentials — entering provisioning");
         return start_provisioning();
     }
+    strlcpy(s_ssid, ssid, sizeof(s_ssid));
+    strlcpy(s_pass, pass, sizeof(s_pass));
 
     s_mode = Mode::CONNECTING;
     esp_netif_create_default_wifi_sta();
@@ -266,6 +308,9 @@ Mode get_mode() { return s_mode; }
 bool is_connected() { return s_mode == Mode::CONNECTED; }
 const char* get_ip() { return s_ip; }
 const char* get_ap_name() { return s_ap_name; }
+const char* get_ssid() { return s_ssid; }
+bool has_password() { return s_pass[0] != '\0'; }
+const char* get_password() { return s_pass; }
 
 esp_err_t save_credentials(const char* ssid, const char* pass) {
     nvs_handle_t h;

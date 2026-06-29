@@ -125,18 +125,6 @@ void on_mqtt_command(const hvac_mqtt::Command& cmd) {
     }
 }
 
-// The ESP32's factory-programmed MAC (eFuse) is its hardware "serial number" —
-// unique per chip. Derive a short, stable id from the low 3 bytes; used for the
-// HA device identity and (when no friendly_name is configured) the MQTT node so
-// 4 units never collide out of the box.
-std::string device_uid() {
-    uint8_t mac[6] = {0};
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    char buf[7];
-    std::snprintf(buf, sizeof(buf), "%02X%02X%02X", mac[3], mac[4], mac[5]);
-    return std::string(buf);
-}
-
 // Split a "mqtt://host:port" broker URI into host + port for the settings model.
 void parse_broker_uri(const std::string& uri, std::string& host, int& port) {
     std::string s = uri;
@@ -203,7 +191,7 @@ extern "C" void app_main() {
     // MQTT bridge. Runtime settings (web UI, persisted to NVS) win over the
     // Kconfig fallback. The friendly_name is the MQTT node and HA device label;
     // if blank, fall back to a unique per-chip name so 4 units don't collide.
-    std::string uid = device_uid();
+    std::string uid = wifi::device_uid();
 
     hvac_mqtt::StoredSettings fallback;
     parse_broker_uri(CONFIG_MQTT_BROKER_URI, fallback.host, fallback.port);

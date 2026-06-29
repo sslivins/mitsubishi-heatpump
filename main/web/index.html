@@ -170,6 +170,20 @@ cursor:pointer;user-select:none;transition:.15s}
       <div class="stat"><div class="k">Free heap</div><div class="v" id="heap">--</div></div>
     </div>
     <button class="btn btn-warn" onclick="sysPost('/api/system/restart','Restart device?')">Restart</button>
+  </div>
+
+  <div class="card">
+    <h2>WiFi</h2>
+    <div class="grid">
+      <div class="stat"><div class="k">Network</div><div class="v" id="wifiSsid">--</div></div>
+      <div class="stat"><div class="k">Status</div><div class="v" id="wifiStat">--</div></div>
+    </div>
+    <div class="mqf"><label>Network (SSID)</label>
+      <input type="text" id="wfSsid" autocomplete="off" placeholder="SSID"></div>
+    <div class="mqf"><label>Password</label>
+      <input type="password" id="wfPass" autocomplete="new-password" placeholder="(unchanged)"></div>
+    <div id="wfMsg" class="status hidden" style="margin:10px 0"></div>
+    <button class="btn btn-warn" id="wfSaveBtn" onclick="saveWifi()">Save &amp; reconnect</button>
     <button class="btn btn-danger" onclick="sysPost('/api/system/factory_reset','Erase WiFi credentials and reboot into setup mode?')">Forget WiFi &amp; reset</button>
   </div>
 
@@ -421,8 +435,39 @@ refresh();
 setInterval(refresh,5000);
 refreshUpdate();
 setInterval(refreshUpdate,30000);
+// ── WiFi settings ──────────────────────────────────────────────────────
+function wfMsg(m,cls){const el=$('wfMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
+
+async function loadWifi(){
+  try{
+    const w=await (await fetch('/api/wifi')).json();
+    $('wifiSsid').textContent=w.ssid||'(not set)';
+    $('wifiStat').textContent=w.mode||'--';
+    $('wfPass').placeholder=w.password_set?'(unchanged)':'(none)';
+    if(document.activeElement!==$('wfSsid')) $('wfSsid').value=w.ssid||'';
+  }catch(e){}
+}
+
+async function saveWifi(){
+  const ssid=$('wfSsid').value.trim();
+  if(!ssid){wfMsg('Network (SSID) is required','err');return}
+  if(!confirm('Save WiFi settings and reconnect? The device will reboot.'))return;
+  const body={ssid};
+  const pw=$('wfPass').value;
+  if(pw) body.password=pw;
+  $('wfSaveBtn').disabled=true;
+  wfMsg('Saving — device will reboot…','info');
+  try{
+    const r=await fetch('/api/wifi',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    wfMsg(r.ok?'Saved — rebooting':'Save failed: '+r.status,r.ok?'ok':'err');
+  }catch(e){wfMsg('Rebooting…','ok')}
+}
+
 loadMqtt();
 setInterval(loadMqtt,30000);
+loadWifi();
+setInterval(loadWifi,15000);
 </script>
 </body>
 </html>
