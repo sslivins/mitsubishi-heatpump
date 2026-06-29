@@ -319,6 +319,78 @@ esp_err_t handle_update_install(httpd_req_t* req) {
     return httpd_resp_sendstr(req, "{\"status\":\"started\"}");
 }
 
+// ── GET /api/mqtt — current broker settings (password masked) ──────────
+esp_err_t handle_mqtt_get(httpd_req_t* req) {
+    set_cors(req);
+    hvac_mqtt::StoredSettings s = hvac_mqtt::get_settings();
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "host", s.host.c_str());
+    cJSON_AddNumberToObject(root, "port", s.port);
+    cJSON_AddStringToObject(root, "username", s.username.c_str());
+    cJSON_AddStringToObject(root, "base_topic", s.base_topic.c_str());
+    cJSON_AddStringToObject(root, "friendly_name", s.friendly_name.c_str());
+    cJSON_AddBoolToObject(root, "password_set", !s.password.empty());
+    cJSON_AddBoolToObject(root, "connected",
+                          s_hooks.mqtt_connected && s_hooks.mqtt_connected());
+    char* str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// ── POST /api/mqtt — save broker settings to NVS, then reboot ───────────
+esp_err_t handle_mqtt_post(httpd_req_t* req) {
+    set_cors(req);
+    char* body = recv_body(req);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
+        return ESP_FAIL;
+    }
+    cJSON* json = cJSON_Parse(body);
+    free(body);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    // Start from the current settings so omitted fields are preserved (notably
+    // the password, which the GET never returns).
+    hvac_mqtt::StoredSettings s = hvac_mqtt::get_settings();
+    const cJSON* v;
+    if ((v = cJSON_GetObjectItem(json, "host")) && cJSON_IsString(v))
+        s.host = v->valuestring;
+    if ((v = cJSON_GetObjectItem(json, "port")) && cJSON_IsNumber(v))
+        s.port = v->valueint;
+    if ((v = cJSON_GetObjectItem(json, "username")) && cJSON_IsString(v))
+        s.username = v->valuestring;
+    if ((v = cJSON_GetObjectItem(json, "password")) && cJSON_IsString(v))
+        s.password = v->valuestring;
+    if ((v = cJSON_GetObjectItem(json, "base_topic")) && cJSON_IsString(v))
+        s.base_topic = v->valuestring;
+    if ((v = cJSON_GetObjectItem(json, "friendly_name")) && cJSON_IsString(v))
+        s.friendly_name = v->valuestring;
+    cJSON_Delete(json);
+
+    if (s.host.empty()) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "host is required");
+        return ESP_FAIL;
+    }
+    if (s.port <= 0) s.port = 1883;
+
+    esp_err_t err = hvac_mqtt::save_settings(s);
+    httpd_resp_set_type(req, "application/json");
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS write failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_sendstr(req, "{\"status\":\"saved\",\"message\":\"rebooting\"}");
+    vTaskDelay(pdMS_TO_TICKS(800));
+    esp_restart();
+    return ESP_OK;  // unreachable
+}
+
 // ── OPTIONS /api/* (CORS preflight) ────────────────────────────────────
 esp_err_t handle_options(httpd_req_t* req) {
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -356,6 +428,8 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/update",              HTTP_GET,     handle_update_get,     nullptr},
         {"/api/update/check",        HTTP_POST,    handle_update_check,   nullptr},
         {"/api/update/install",      HTTP_POST,    handle_update_install, nullptr},
+        {"/api/mqtt",                HTTP_GET,      handle_mqtt_get,       nullptr},
+        {"/api/mqtt",                HTTP_POST,     handle_mqtt_post,      nullptr},
         {"/api/system/restart",      HTTP_POST,    handle_restart,        nullptr},
         {"/api/system/factory_reset",HTTP_POST,    handle_factory_reset,  nullptr},
         {"/api/*",                   HTTP_OPTIONS, handle_options,        nullptr},

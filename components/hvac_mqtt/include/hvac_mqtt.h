@@ -32,7 +32,11 @@ struct Config {
     std::string username;
     std::string password;
     std::string base_topic;     ///< e.g. "mitsubishi2mqtt"
-    std::string friendly_name;  ///< e.g. "living_room_hp"
+    std::string friendly_name;  ///< e.g. "living_room_hp" (the MQTT node name)
+    std::string device_uid;     ///< hardware-unique id (from the ESP32 MAC). Used
+                                ///< for HA unique_id/device.identifiers so 4 units
+                                ///< never merge or collide. e.g. "E609A1".
+    std::string sw_version;     ///< firmware version, shown on the HA device.
 };
 
 /// A command parsed from a .../*/set topic, to be applied to the heat pump.
@@ -44,9 +48,36 @@ struct Command {
 
 using CommandCallback = std::function<void(const Command&)>;
 
+/// Broker settings that are user-configurable at runtime (web UI) and persisted
+/// to NVS. Kept separate from the internal Config so the UI can present host/port
+/// fields directly (matching the mitsubishi2MQTT layout).
+struct StoredSettings {
+    std::string host;
+    int         port = 1883;
+    std::string username;
+    std::string password;
+    std::string base_topic;
+    std::string friendly_name;  ///< blank → firmware derives "heatpump-<uid>"
+};
+
+/// Read the persisted broker settings from NVS, falling back per-field to
+/// `fallback` (typically the Kconfig defaults) for any key not yet saved.
+StoredSettings load_settings(const StoredSettings& fallback);
+
+/// Persist broker settings to NVS. Takes effect on the next boot.
+esp_err_t save_settings(const StoredSettings& s);
+
+/// The settings the running client was started with (for the web UI to display).
+StoredSettings get_settings();
+
 /// Start the MQTT client. The callback fires (on the MQTT task) for every
 /// inbound command topic; apply it to your cn105::HeatPump there.
 esp_err_t init(const Config& cfg, CommandCallback on_command);
+
+/// Register a callback fired (on the MQTT task) on every successful (re)connect,
+/// after subscriptions and availability are published. Use it to (re)publish the
+/// retained discovery configs and current state so HA re-syncs after a drop.
+void set_on_connected(std::function<void()> cb);
 
 /// Publish the Home Assistant MQTT-discovery config (retained). Call once after
 /// the first successful connect.

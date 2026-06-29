@@ -31,6 +31,11 @@ display:flex;align-items:center;gap:6px}
 select{background:#0e1116;color:#e6edf3;border:1px solid #30363d;border-radius:8px;
 padding:8px 10px;font-size:.9em;min-width:130px;outline:none}
 select:focus{border-color:#e60012}
+.mqf{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.mqf label{font-size:.85em;color:#c9d1d9;white-space:nowrap}
+.mqf input{flex:1;max-width:62%;background:#0e1116;color:#e6edf3;border:1px solid #30363d;
+border-radius:8px;padding:8px 10px;font-size:.85em;outline:none}
+.mqf input:focus{border-color:#e60012}
 .stepper{display:flex;align-items:center;gap:12px}
 .stepper button{width:36px;height:36px;border-radius:8px;border:1px solid #30363d;
 background:#21262d;color:#e6edf3;font-size:1.2em;cursor:pointer}
@@ -166,6 +171,28 @@ cursor:pointer;user-select:none;transition:.15s}
     </div>
     <button class="btn btn-warn" onclick="sysPost('/api/system/restart','Restart device?')">Restart</button>
     <button class="btn btn-danger" onclick="sysPost('/api/system/factory_reset','Erase WiFi credentials and reboot into setup mode?')">Forget WiFi &amp; reset</button>
+  </div>
+
+  <div class="card">
+    <h2>MQTT / Home Assistant</h2>
+    <div class="grid">
+      <div class="stat"><div class="k">Status</div><div class="v" id="mqttStat">--</div></div>
+      <div class="stat"><div class="k">Device ID</div><div class="v" id="mqttNode">--</div></div>
+    </div>
+    <div class="mqf"><label>Broker host</label>
+      <input type="text" id="mqHost" placeholder="homeassistant.local"></div>
+    <div class="mqf"><label>Port</label>
+      <input type="number" id="mqPort" placeholder="1883"></div>
+    <div class="mqf"><label>Username</label>
+      <input type="text" id="mqUser" autocomplete="off" placeholder="(optional)"></div>
+    <div class="mqf"><label>Password</label>
+      <input type="password" id="mqPass" autocomplete="new-password" placeholder="(unchanged)"></div>
+    <div class="mqf"><label>Base topic</label>
+      <input type="text" id="mqBase" placeholder="mitsubishi2mqtt"></div>
+    <div class="mqf"><label>Friendly name</label>
+      <input type="text" id="mqFriendly" placeholder="(blank → heatpump-&lt;id&gt;)"></div>
+    <div id="mqMsg" class="status hidden" style="margin:10px 0"></div>
+    <button class="btn btn-warn" id="mqSaveBtn" onclick="saveMqtt()">Save &amp; reboot</button>
   </div>
 
   <div class="card">
@@ -352,10 +379,50 @@ async function installUpdate(){
   }catch(e){updMsg('Request failed','err')}
 }
 
+// ── MQTT / Home Assistant settings ─────────────────────────────────────
+function mqMsg(m,cls){const el=$('mqMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
+
+async function loadMqtt(){
+  try{
+    const m=await (await fetch('/api/mqtt')).json();
+    $('mqHost').value=m.host||'';
+    $('mqPort').value=m.port||1883;
+    $('mqUser').value=m.username||'';
+    $('mqBase').value=m.base_topic||'';
+    $('mqFriendly').value=m.friendly_name||'';
+    $('mqPass').placeholder=m.password_set?'(unchanged)':'(none)';
+    $('mqttStat').textContent=m.connected?'connected':'disconnected';
+    $('mqttNode').textContent=m.friendly_name||'heatpump-<id>';
+  }catch(e){}
+}
+
+async function saveMqtt(){
+  const body={
+    host:$('mqHost').value.trim(),
+    port:parseInt($('mqPort').value,10)||1883,
+    username:$('mqUser').value.trim(),
+    base_topic:$('mqBase').value.trim(),
+    friendly_name:$('mqFriendly').value.trim()
+  };
+  const pw=$('mqPass').value;
+  if(pw) body.password=pw;
+  if(!body.host){mqMsg('Broker host is required','err');return}
+  if(!confirm('Save MQTT settings and reboot?'))return;
+  $('mqSaveBtn').disabled=true;
+  mqMsg('Saving — device will reboot…','info');
+  try{
+    const r=await fetch('/api/mqtt',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    mqMsg(r.ok?'Saved — rebooting':'Save failed: '+r.status,r.ok?'ok':'err');
+  }catch(e){mqMsg('Rebooting…','ok')}
+}
+
 refresh();
 setInterval(refresh,5000);
 refreshUpdate();
 setInterval(refreshUpdate,30000);
+loadMqtt();
+setInterval(loadMqtt,30000);
 </script>
 </body>
 </html>

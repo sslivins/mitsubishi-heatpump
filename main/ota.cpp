@@ -304,6 +304,7 @@ void perform_check() {
     RespBuf buf;
     std::string latest, url, published, release_url, err_msg;
     bool ok = false;
+    bool no_release = false;  ///< 404: no published release → treat as up to date
 
     esp_http_client_config_t cfg = {};
     cfg.url = kGithubApiUrl;
@@ -355,7 +356,10 @@ void perform_check() {
             }
         } else {
             if (sc == 404) {
-                err_msg = "no published release yet";
+                // /releases/latest 404s when the repo has no published (non-draft,
+                // non-prerelease) release. That isn't an error — there's simply
+                // nothing newer to install, so report the device as up to date.
+                no_release = true;
             } else {
                 char tmp[64];
                 snprintf(tmp, sizeof(tmp), "HTTP %d (%s)", sc, esp_err_to_name(e));
@@ -384,6 +388,15 @@ void perform_check() {
             s_upd.error.clear();
             ESP_LOGI(TAG, "update check: current=%s latest=%s available=%s",
                      cur, latest.c_str(), s_upd.update_available ? "yes" : "no");
+        } else if (no_release) {
+            // No published release: nothing newer than what's running.
+            s_upd.latest_version = cur;
+            s_upd.download_url.clear();
+            s_upd.published_at.clear();
+            s_upd.release_url.clear();
+            s_upd.update_available = false;
+            s_upd.error.clear();
+            ESP_LOGI(TAG, "update check: no published release — up to date (%s)", cur);
         } else {
             s_upd.error = err_msg;
             ESP_LOGW(TAG, "update check failed: %s", err_msg.c_str());

@@ -48,7 +48,12 @@ menu "Mitsubishi Heat Pump Controller"
 
         config MQTT_FRIENDLY_NAME
             string "Friendly name"
-            default "heatpump"
+            default ""
+            help
+                MQTT node name and Home Assistant device label. Give each unit a
+                distinct name (e.g. "living_room_hp"). If left blank, the
+                firmware uses "heatpump-<MAC suffix>" so multiple units never
+                collide on topics or HA entities out of the box.
     endmenu
 
     menu "CN105 (Mitsubishi serial)"
