@@ -64,6 +64,11 @@ void url_task(void* arg) {
     http.crt_bundle_attach = esp_crt_bundle_attach;
     http.timeout_ms = 20000;
     http.keep_alive_enable = true;
+    // GitHub release downloads 302-redirect to a long presigned CDN URL; the
+    // default 512-byte buffers overflow ("HTTP_CLIENT: Out of buffer") when the
+    // redirected request line is written. Size them up so redirects work.
+    http.buffer_size = 4096;
+    http.buffer_size_tx = 4096;
 
     esp_https_ota_config_t cfg = {};
     cfg.http_config = &http;
