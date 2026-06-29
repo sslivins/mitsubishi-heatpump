@@ -13,8 +13,10 @@
 #include "cn105.h"
 #include "m5pm1.h"
 #include "hvac_mqtt.h"
+#include "web_ui.h"
 
 #include <cstdlib>
+#include <mutex>
 
 #include "esp_log.h"
 #include "esp_app_desc.h"
@@ -31,6 +33,27 @@ namespace {
 cn105::HeatPump g_hp;
 m5pm1::PMIC     g_pmic;
 
+// Latest PMIC telemetry, refreshed by pmic_task and read by the web server so
+// the HTTP task never touches the I2C bus directly.
+struct PowerSnap {
+    bool                present  = false;
+    uint16_t            vbat_mv  = 0;
+    uint16_t            vin_mv   = 0;
+    m5pm1::PowerSource  source   = m5pm1::PowerSource::UNKNOWN;
+    bool                charging = false;
+};
+std::mutex g_pwr_mtx;
+PowerSnap  g_pwr;
+
+const char* power_source_str(m5pm1::PowerSource s) {
+    switch (s) {
+        case m5pm1::PowerSource::VIN:     return "vin";
+        case m5pm1::PowerSource::VIN_OUT: return "vin_out";
+        case m5pm1::PowerSource::BATTERY: return "battery";
+        default:                          return "unknown";
+    }
+}
+
 // --- PMIC / charge-governor task (~1 Hz) ---
 void pmic_task(void*) {
     m5pm1::GovernorConfig gov{};
@@ -45,6 +68,16 @@ void pmic_task(void*) {
 #ifdef CONFIG_PMIC_CHARGE_GOVERNOR
             g_pmic.governor_tick(gov);
 #endif
+            PowerSnap snap;
+            snap.present = true;
+            g_pmic.read_vbat_mv(snap.vbat_mv);
+            g_pmic.read_vin_mv(snap.vin_mv);
+            g_pmic.read_power_source(snap.source);
+            // Best-effort: on external power and below target → likely charging.
+            snap.charging = (snap.source != m5pm1::PowerSource::BATTERY) &&
+                            (snap.vbat_mv < gov.vbat_target_mv);
+            std::lock_guard<std::mutex> lock(g_pwr_mtx);
+            g_pwr = snap;
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -139,6 +172,28 @@ extern "C" void app_main() {
     };
     if (hvac_mqtt::init(mcfg, on_mqtt_command) != ESP_OK) {
         ESP_LOGE(TAG, "MQTT init failed");
+    }
+
+    // On-device web UI (REST + dashboard). Reuses on_mqtt_command so the web
+    // and MQTT control paths funnel through identical apply logic.
+    web_ui::Hooks hooks;
+    hooks.get_settings   = [] { return g_hp.getSettings(); };
+    hooks.get_status     = [] { return g_hp.getStatus(); };
+    hooks.unit_connected = [] { return g_hp.isConnected(); };
+    hooks.mqtt_connected = [] { return hvac_mqtt::is_connected(); };
+    hooks.apply_command  = [](const hvac_mqtt::Command& c) { on_mqtt_command(c); };
+    hooks.get_power = [] {
+        web_ui::PowerTelemetry t;
+        std::lock_guard<std::mutex> lock(g_pwr_mtx);
+        t.present  = g_pwr.present;
+        t.vbat_mv  = g_pwr.vbat_mv;
+        t.vin_mv   = g_pwr.vin_mv;
+        t.source   = power_source_str(g_pwr.source);
+        t.charging = g_pwr.charging;
+        return t;
+    };
+    if (web_ui::init(hooks) != ESP_OK) {
+        ESP_LOGW(TAG, "web UI failed to start");
     }
 
     // Heat pump protocol.

@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mitsubishi Heat Pump</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:#0e1116;color:#e6edf3;
+min-height:100vh;padding:16px}
+.wrap{max-width:480px;margin:0 auto}
+h1{font-size:1.2em;color:#e60012;margin-bottom:2px}
+.sub{font-size:.8em;color:#8b949e;margin-bottom:14px}
+.card{background:#161b22;border:1px solid #21262d;border-radius:12px;padding:16px;margin-bottom:14px}
+.card h2{font-size:.78em;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;margin-bottom:12px}
+.badges{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.badge{font-size:.78em;padding:4px 10px;border-radius:20px;background:#21262d;color:#8b949e;
+display:flex;align-items:center;gap:6px}
+.badge .dot{width:8px;height:8px;border-radius:50%;background:#6e7681}
+.badge.on .dot{background:#3fb950}
+.badge.off .dot{background:#f85149}
+.room{display:flex;align-items:baseline;gap:8px;margin-bottom:4px}
+.room .t{font-size:2.6em;font-weight:300}
+.room .u{font-size:1em;color:#8b949e}
+.op{font-size:.82em;color:#8b949e}
+.op.active{color:#3fb950}
+.row{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.row:last-child{margin-bottom:0}
+.row label{font-size:.9em;color:#c9d1d9}
+select{background:#0e1116;color:#e6edf3;border:1px solid #30363d;border-radius:8px;
+padding:8px 10px;font-size:.9em;min-width:130px;outline:none}
+select:focus{border-color:#e60012}
+.stepper{display:flex;align-items:center;gap:12px}
+.stepper button{width:36px;height:36px;border-radius:8px;border:1px solid #30363d;
+background:#21262d;color:#e6edf3;font-size:1.2em;cursor:pointer}
+.stepper button:hover{background:#30363d}
+.stepper .val{font-size:1.2em;min-width:64px;text-align:center}
+.toggle{position:relative;width:52px;height:28px}
+.toggle input{opacity:0;width:0;height:0}
+.slider{position:absolute;inset:0;background:#30363d;border-radius:28px;cursor:pointer;transition:.2s}
+.slider::before{content:"";position:absolute;width:22px;height:22px;left:3px;top:3px;
+background:#fff;border-radius:50%;transition:.2s}
+.toggle input:checked+.slider{background:#e60012}
+.toggle input:checked+.slider::before{transform:translateX(24px)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.stat{background:#0e1116;border:1px solid #21262d;border-radius:8px;padding:10px}
+.stat .k{font-size:.72em;color:#8b949e}
+.stat .v{font-size:1.05em;margin-top:2px}
+.btn{cursor:pointer;border:none;border-radius:8px;padding:9px 14px;font-size:.88em;width:100%}
+.btn-warn{background:#21262d;color:#f0883e;border:1px solid #30363d;margin-top:8px}
+.btn-warn:hover{background:#30363d}
+.btn-danger{background:#21262d;color:#f85149;border:1px solid #30363d;margin-top:8px}
+.btn-danger:hover{background:#30363d}
+.note{font-size:.75em;color:#f0883e;background:#2a1a0d;border:1px solid #5a3a1a;
+border-radius:8px;padding:8px 10px;margin-bottom:14px}
+.dim{opacity:.5;pointer-events:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Mitsubishi Heat Pump</h1>
+  <p class="sub" id="subtitle">connecting…</p>
+
+  <div class="badges">
+    <span class="badge" id="bWifi"><span class="dot"></span>WiFi</span>
+    <span class="badge" id="bUnit"><span class="dot"></span>Unit</span>
+    <span class="badge" id="bMqtt"><span class="dot"></span>MQTT</span>
+  </div>
+
+  <div class="note" id="stubNote">Protocol engine is in development — controls are wired
+  end-to-end but the unit link is a stub until the CN105 packet engine lands.</div>
+
+  <div class="card">
+    <h2>Room</h2>
+    <div class="room"><span class="t" id="roomTemp">--</span><span class="u">°C</span></div>
+    <div class="op" id="opState">idle</div>
+  </div>
+
+  <div class="card" id="controls">
+    <h2>Controls</h2>
+    <div class="row">
+      <label>Power</label>
+      <div class="toggle"><input type="checkbox" id="power" onchange="setPower(this.checked)"><span class="slider" onclick="document.getElementById('power').click()"></span></div>
+    </div>
+    <div class="row">
+      <label>Mode</label>
+      <select id="mode" onchange="setField('mode',this.value)">
+        <option>HEAT</option><option>COOL</option><option>DRY</option>
+        <option>FAN</option><option>AUTO</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Setpoint</label>
+      <div class="stepper">
+        <button onclick="bumpTemp(-0.5)">−</button>
+        <span class="val"><span id="setTemp">--</span>°C</span>
+        <button onclick="bumpTemp(0.5)">+</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>Fan</label>
+      <select id="fan" onchange="setField('fan',this.value)">
+        <option>AUTO</option><option>QUIET</option><option>1</option>
+        <option>2</option><option>3</option><option>4</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Vane</label>
+      <select id="vane" onchange="setField('vane',this.value)">
+        <option>AUTO</option><option>1</option><option>2</option><option>3</option>
+        <option>4</option><option>5</option><option>SWING</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Wide Vane</label>
+      <select id="wideVane" onchange="setField('wideVane',this.value)">
+        <option>&lt;&lt;</option><option>&lt;</option><option>|</option>
+        <option>&gt;</option><option>&gt;&gt;</option><option>&lt;&gt;</option><option>SWING</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Power</h2>
+    <div class="grid">
+      <div class="stat"><div class="k">Battery</div><div class="v" id="vbat">--</div></div>
+      <div class="stat"><div class="k">Input (5V)</div><div class="v" id="vin">--</div></div>
+      <div class="stat"><div class="k">Source</div><div class="v" id="psrc">--</div></div>
+      <div class="stat"><div class="k">Charging</div><div class="v" id="chg">--</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>System</h2>
+    <div class="grid">
+      <div class="stat"><div class="k">Firmware</div><div class="v" id="ver">--</div></div>
+      <div class="stat"><div class="k">IP</div><div class="v" id="ip">--</div></div>
+      <div class="stat"><div class="k">Uptime</div><div class="v" id="uptime">--</div></div>
+      <div class="stat"><div class="k">Free heap</div><div class="v" id="heap">--</div></div>
+    </div>
+    <button class="btn btn-warn" onclick="sysPost('/api/system/restart','Restart device?')">Restart</button>
+    <button class="btn btn-danger" onclick="sysPost('/api/system/factory_reset','Erase WiFi credentials and reboot into setup mode?')">Forget WiFi &amp; reset</button>
+  </div>
+</div>
+
+<script>
+function $(id){return document.getElementById(id)}
+let userEditing=false;
+
+function badge(el,on){el.className='badge '+(on?'on':'off')}
+
+function fmtUptime(s){
+  s=Math.floor(s);const d=Math.floor(s/86400);s%=86400;
+  const h=Math.floor(s/3600);s%=3600;const m=Math.floor(s/60);
+  if(d)return `${d}d ${h}h`;if(h)return `${h}h ${m}m`;return `${m}m`;
+}
+
+async function refresh(){
+  try{
+    const s=await (await fetch('/api/status')).json();
+    badge($('bWifi'),true);
+    badge($('bUnit'),s.unit_connected);
+    badge($('bMqtt'),s.mqtt_connected);
+    $('subtitle').textContent=s.hostname+' · '+s.ip;
+    $('ver').textContent=s.version;
+    $('ip').textContent=s.ip;
+    $('uptime').textContent=fmtUptime(s.uptime_s);
+    $('heap').textContent=(s.free_heap/1024|0)+' KB';
+    const p=s.power||{};
+    $('vbat').textContent=p.present?(p.vbat_mv/1000).toFixed(2)+' V':'n/a';
+    $('vin').textContent=p.present?(p.vin_mv/1000).toFixed(2)+' V':'n/a';
+    $('psrc').textContent=p.present?(p.source||'--'):'n/a';
+    $('chg').textContent=p.present?(p.charging?'yes':'no'):'n/a';
+    $('stubNote').style.display=s.unit_connected?'none':'block';
+
+    if(!userEditing){
+      const c=await (await fetch('/api/settings')).json();
+      $('power').checked=(c.power==='ON');
+      if(c.mode)$('mode').value=c.mode;
+      if(c.fan)$('fan').value=c.fan;
+      if(c.vane)$('vane').value=c.vane;
+      if(c.wideVane)$('wideVane').value=c.wideVane;
+      $('setTemp').textContent=c.temperature!=null?c.temperature.toFixed(1):'--';
+      $('roomTemp').textContent=c.roomTemperature!=null&&c.roomTemperature>0?c.roomTemperature.toFixed(1):'--';
+      const op=$('opState');
+      op.textContent=c.operating?'heating/cooling':'idle';
+      op.className='op'+(c.operating?' active':'');
+    }
+  }catch(e){
+    badge($('bWifi'),false);
+    $('subtitle').textContent='disconnected';
+  }
+}
+
+async function post(body){
+  userEditing=true;
+  try{
+    await fetch('/api/settings',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  }finally{
+    setTimeout(()=>{userEditing=false;refresh();},600);
+  }
+}
+
+function setPower(on){post({power:on?'ON':'OFF'})}
+function setField(k,v){const o={};o[k]=v;post(o)}
+function bumpTemp(d){
+  const el=$('setTemp');let t=parseFloat(el.textContent);
+  if(isNaN(t))t=21;t=Math.max(16,Math.min(31,t+d));
+  el.textContent=t.toFixed(1);
+  post({temperature:t});
+}
+
+async function sysPost(url,msg){
+  if(!confirm(msg))return;
+  try{await fetch(url,{method:'POST'})}catch(e){}
+  $('subtitle').textContent='rebooting…';
+}
+
+refresh();
+setInterval(refresh,5000);
+</script>
+</body>
+</html>

@@ -9,8 +9,9 @@ It is the ground-up ESP-IDF successor to
 and preserves that project's MQTT topic contract, so existing Home Assistant
 entities keep working.
 
-> **Status: scaffold.** The architecture, threading, WiFi, MQTT client wiring,
-> and PMIC I²C driver are in place and build. The CN105 packet engine and the
+> **Status: scaffold.** The architecture, threading, WiFi (incl. captive-portal
+> provisioning + mDNS), the on-device web UI / REST API, MQTT client wiring, and
+> the PMIC I²C driver are in place and build. The CN105 packet engine and the
 > MQTT JSON payloads are marked `TODO(port)` stubs — fill them in once hardware
 > is on the bench. CI builds green today.
 
@@ -76,8 +77,29 @@ idf.py -p <PORT> flash monitor
 ```
 
 WiFi/MQTT can be set at build time (`sdkconfig.defaults.local` /
-`menuconfig`) or at runtime (NVS, via the provisioning SoftAP). On first boot
-with no credentials the device starts a `mitsubishi-heatpump-setup` SoftAP.
+`menuconfig`) or at runtime (NVS, via the captive-portal SoftAP). On first boot
+with no credentials the device starts a `mitsubishi-heatpump-XXXX` SoftAP
+(captive portal at `http://192.168.4.1/`); pick a network and enter the
+passphrase, and it saves to NVS and reboots into STA mode.
+
+## Web UI / REST API
+
+Once connected to WiFi the device serves a small diagnostics/control dashboard
+at `http://<ip>/` (or `http://mitsubishi-heatpump.local/` via mDNS). It is for
+provisioning and diagnostics — MQTT/Home Assistant remains the primary control
+path. The same JSON API backs it:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET`  | `/` | gzip'd dashboard |
+| `GET`  | `/api/status` | version, ip, uptime, free heap, unit/MQTT link, PMIC power telemetry |
+| `GET`  | `/api/settings` | current heat-pump settings + status |
+| `POST` | `/api/settings` | apply any subset of `{power,mode,temperature,fan,vane,wideVane,remoteTemp}` |
+| `POST` | `/api/system/restart` | reboot |
+| `POST` | `/api/system/factory_reset` | erase WiFi creds + reboot into setup |
+
+Web commands reuse `hvac_mqtt::Command`, so the web and MQTT control paths
+funnel through identical apply logic in `main.cpp`.
 
 ## Releasing
 

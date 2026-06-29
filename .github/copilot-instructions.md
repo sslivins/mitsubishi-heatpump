@@ -65,10 +65,12 @@ to **Home Assistant over MQTT**. Successor to the Arduino/ESP8266
   remote-temperature. Reference: SwiCago/HeatPump.
 - `components/hvac_mqtt/hvac_mqtt.cpp` — JSON for `publish_state`,
   `publish_settings`, `publish_discovery` (`TODO(port)`), matching mitsubishi2MQTT.
-- `main/wifi_manager.cpp` — captive-portal page for provisioning (currently a bare
-  SoftAP). Port arctic-sniffer's `dns_server` + portal HTML.
 - `components/m5pm1/m5pm1.cpp` — `TODO(verify)` the ADC scaling + BATT_LVP encoding
   against hardware.
+
+The captive-portal provisioning page (`main/web/portal.html` + `dns_server`) and
+the on-device web UI / REST API (`main/web_ui.cpp` + `main/web/index.html`) are
+implemented.
 
 ## After Changes — Checklist
 
