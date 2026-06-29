@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# mitsubishi-heatpump — M5Stack Stamp-S3Bat (ESP32-S3-PICO-1, 8MB flash)
+# ---------------------------------------------------------------------------
+
+# Target
+CONFIG_IDF_TARGET="esp32s3"
+
+# Flash — Stamp-S3Bat is 8MB
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# PSRAM — the -R8 die has octal PSRAM; IGNORE_NOTFOUND lets non-R parts boot.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+
+# Console on the built-in USB Serial/JTAG (no external UART bridge on the Stamp)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# WiFi — leave blank here; set real creds in sdkconfig.defaults.local or via the
+# captive portal. Disable power-save for low-latency MQTT command response.
+CONFIG_WIFI_SSID=""
+CONFIG_WIFI_PASSWORD=""
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
+
+# OTA rollback protection — a bad OTA rolls back to the last good slot unless
+# the new firmware calls esp_ota_mark_app_valid_cancel_rollback() after MQTT
+# reconnects successfully.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# TLS cert bundle (optional MQTT-over-TLS + HTTPS OTA from GitHub)
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# Misc
+CONFIG_FREERTOS_HZ=1000
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144

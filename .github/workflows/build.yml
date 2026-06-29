@@ -1,0 +1,45 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'main/**'
+      - 'components/**'
+      - 'CMakeLists.txt'
+      - 'sdkconfig.defaults'
+      - 'partitions.csv'
+      - '.github/workflows/build.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'main/**'
+      - 'components/**'
+      - 'CMakeLists.txt'
+      - 'sdkconfig.defaults'
+      - 'partitions.csv'
+      - '.github/workflows/build.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.4.3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py set-target esp32s3
+          idf.py build
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+            build/ota_data_initial.bin
+            build/mitsubishi-heatpump.bin

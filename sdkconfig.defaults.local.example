@@ -1,0 +1,14 @@
+# Copy this file to sdkconfig.defaults.local (gitignored) and fill in real
+# values for local development. CMakeLists.txt appends it after
+# sdkconfig.defaults so these win. The captive portal can override WiFi at
+# runtime; this is just a convenient fallback while flashing on the bench.
+
+CONFIG_WIFI_SSID="my-iot-ssid"
+CONFIG_WIFI_PASSWORD="my-iot-password"
+
+# MQTT broker fallback (also configurable via the web portal / NVS)
+CONFIG_MQTT_BROKER_URI="mqtt://192.168.1.10:1883"
+CONFIG_MQTT_USERNAME=""
+CONFIG_MQTT_PASSWORD=""
+CONFIG_MQTT_BASE_TOPIC="mitsubishi2mqtt"
+CONFIG_MQTT_FRIENDLY_NAME="living_room_hp"

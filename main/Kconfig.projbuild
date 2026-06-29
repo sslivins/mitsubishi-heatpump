@@ -1,0 +1,105 @@
+menu "Mitsubishi Heat Pump Controller"
+
+    menu "WiFi"
+        config WIFI_SSID
+            string "WiFi SSID (fallback)"
+            default ""
+            help
+                Fallback SSID used only when no credentials are stored in NVS
+                (i.e. the captive portal has not been used yet). Leave empty to
+                always boot into provisioning mode.
+
+        config WIFI_PASSWORD
+            string "WiFi Password (fallback)"
+            default ""
+
+        config WIFI_CONNECT_TIMEOUT_S
+            int "STA connect timeout (s) before falling back to provisioning"
+            default 20
+            range 5 120
+
+        config MDNS_HOSTNAME
+            string "mDNS hostname"
+            default "mitsubishi-heatpump"
+            help
+                Reachable as <hostname>.local for the diagnostics web UI.
+    endmenu
+
+    menu "MQTT"
+        config MQTT_BROKER_URI
+            string "Broker URI"
+            default "mqtt://192.168.1.10:1883"
+            help
+                e.g. mqtt://host:1883 or mqtts://host:8883 for TLS.
+
+        config MQTT_USERNAME
+            string "Username"
+            default ""
+
+        config MQTT_PASSWORD
+            string "Password"
+            default ""
+
+        config MQTT_BASE_TOPIC
+            string "Base topic"
+            default "mitsubishi2mqtt"
+            help
+                Topics are <base>/<friendly_name>/... matching mitsubishi2MQTT.
+
+        config MQTT_FRIENDLY_NAME
+            string "Friendly name"
+            default "heatpump"
+    endmenu
+
+    menu "CN105 (Mitsubishi serial)"
+        config CN105_UART_PORT
+            int "UART port number"
+            default 1
+            range 0 2
+
+        config CN105_UART_TX_PIN
+            int "TX GPIO (to CN105)"
+            default 1
+            help
+                Confirm against your Stamp-S3Bat -> CN105 harness wiring.
+
+        config CN105_UART_RX_PIN
+            int "RX GPIO (from CN105)"
+            default 2
+    endmenu
+
+    menu "M5PM1 PMIC (battery / charge governor)"
+        config PMIC_I2C_SDA_PIN
+            int "I2C SDA GPIO"
+            default 48
+            help
+                Stamp-S3Bat internal I2C: SDA=GPIO48, SCL=GPIO47 (per S015 schematic).
+
+        config PMIC_I2C_SCL_PIN
+            int "I2C SCL GPIO"
+            default 47
+
+        config PMIC_CHARGE_GOVERNOR
+            bool "Enable closed-loop charge governor"
+            default y
+            help
+                Gate the LGS4056 CHG_EN based on VIN so the CN105 5V supply
+                stays within budget.
+
+        config PMIC_VIN_FLOOR_MV
+            int "Pause charging when VIN drops below (mV)"
+            default 4800
+            depends on PMIC_CHARGE_GOVERNOR
+
+        config PMIC_VIN_RESUME_MV
+            int "Resume charging when VIN rises above (mV)"
+            default 4950
+            depends on PMIC_CHARGE_GOVERNOR
+
+        config PMIC_VBAT_TARGET_MV
+            int "Stop charging at VBAT (mV)"
+            default 4150
+            depends on PMIC_CHARGE_GOVERNOR
+    endmenu
+
+endmenu
