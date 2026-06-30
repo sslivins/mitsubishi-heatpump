@@ -145,7 +145,7 @@ display:flex;align-items:center;justify-content:center;gap:5px}
   <p class="sub" id="subtitle">connecting…</p>
   <div id="offline" class="hidden" style="margin:8px auto;max-width:420px;padding:8px 12px;border-radius:8px;background:#5a1e1e;color:#ffd9d9;font-size:.8em">Connection lost — reconnecting…</div>
 
-  <div class="badges">
+  <div class="badges" id="statusBadges">
     <span class="badge" id="bWifi"><span class="dot"></span>WiFi</span>
     <span class="badge" id="bUnit"><span class="dot"></span>Unit</span>
     <span class="badge" id="bMqtt"><span class="dot"></span>MQTT</span>
@@ -786,6 +786,9 @@ function applyRole(){
   document.querySelectorAll('.tab').forEach(t=>{
     if(t.dataset.tab!=='climate') t.style.display=user?'none':'';
   });
+  // The WiFi/Unit/MQTT badges are diagnostics for admins; hide them for the
+  // climate-only user.
+  $('statusBadges').style.display=user?'none':'';
   if(user) showTab('climate');
 }
 
