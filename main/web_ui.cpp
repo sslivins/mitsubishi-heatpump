@@ -120,7 +120,12 @@ bool admin_authorized(httpd_req_t* req) {
 
 void set_session_cookie(httpd_req_t* req, const char* token) {
     // HTTP-only device (no TLS), so the Secure flag is intentionally omitted.
-    char hdr[160];
+    // NOTE: httpd_resp_set_hdr() stores the pointer WITHOUT copying, so the
+    // buffer must stay valid until the response is sent. A stack buffer here
+    // would dangle the moment this function returns (the caller then reuses
+    // that stack for its JSON body, corrupting the Set-Cookie header). The
+    // httpd request handler runs single-threaded, so a static buffer is safe.
+    static char hdr[160];
     snprintf(hdr, sizeof(hdr),
              "%s=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%ld",
              kCookieName, token, (long)AUTH_SESSION_LIFETIME_SEC);
@@ -128,7 +133,7 @@ void set_session_cookie(httpd_req_t* req, const char* token) {
 }
 
 void clear_session_cookie(httpd_req_t* req) {
-    char hdr[120];
+    static char hdr[120];  // must outlive the response — see set_session_cookie
     snprintf(hdr, sizeof(hdr),
              "%s=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0", kCookieName);
     httpd_resp_set_hdr(req, "Set-Cookie", hdr);
