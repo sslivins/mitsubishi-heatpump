@@ -44,3 +44,8 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 # Origin + Referer + cookies). The 512-byte default rejects the login POST
 # with "Header fields are too long". 2KB gives ample headroom.
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=2048
+
+# Socket pool — the web server is configured for max_open_sockets=13 (browsers
+# open up to 6 keep-alive connections per tab). Raise the lwip ceiling so the
+# httpd pool plus MQTT, mDNS and the OTA HTTPS check all fit. 16 is the max.
+CONFIG_LWIP_MAX_SOCKETS=16

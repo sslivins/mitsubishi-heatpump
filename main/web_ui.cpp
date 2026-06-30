@@ -744,7 +744,18 @@ esp_err_t init(const Hooks& hooks) {
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.max_uri_handlers = 28;
     cfg.stack_size = 8192;
+    // The default 7 sockets reserve 3 for internal use, leaving only 4 for
+    // clients — fewer than the 6 keep-alive connections a single browser tab
+    // opens, which wedged the server (ERR_EMPTY_RESPONSE). Give real headroom.
+    cfg.max_open_sockets = 13;
+    // Recycle the least-recently-used connection instead of refusing new ones.
     cfg.lru_purge_enable = true;
+    // Reap dead/abandoned connections (closed tab, slept laptop) via TCP
+    // keepalive so their sockets don't linger and starve the pool.
+    cfg.keep_alive_enable   = true;
+    cfg.keep_alive_idle     = 5;   // seconds idle before first probe
+    cfg.keep_alive_interval = 5;   // seconds between probes
+    cfg.keep_alive_count    = 3;   // drop after 3 unanswered probes
 
     esp_err_t ret = httpd_start(&s_server, &cfg);
     if (ret != ESP_OK) {
