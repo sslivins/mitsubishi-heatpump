@@ -103,12 +103,19 @@ bool api_authorized(httpd_req_t* req) {
     return false;
 }
 
-// Authorize a browser-only config request (auth settings). Never lock out the
-// UI: when web auth is off, anyone with network access may configure it.
-bool web_authorized(httpd_req_t* req) {
-    if (!auth_mgr_web_auth_enabled()) return true;
+// True if the request is allowed admin-level access. The climate-only "user"
+// role is denied. An API key (when API auth is on) and a web-auth-disabled
+// device both count as admin.
+bool admin_authorized(httpd_req_t* req) {
+    if (!auth_mgr_web_auth_enabled()) return true;  // no web login → full access
+    if (auth_mgr_api_auth_enabled()) {
+        char key[AUTH_API_KEY_LEN + 1];
+        if (get_api_key(req, key, sizeof(key)) && auth_mgr_validate_api_key(key))
+            return true;
+    }
     char tok[AUTH_SESSION_TOKEN_LEN + 1];
-    return get_cookie_token(req, tok, sizeof(tok)) && auth_mgr_validate_session(tok);
+    return get_cookie_token(req, tok, sizeof(tok)) &&
+           auth_mgr_session_role(tok) == AUTH_ROLE_ADMIN;
 }
 
 void set_session_cookie(httpd_req_t* req, const char* token) {
@@ -134,6 +141,20 @@ void clear_session_cookie(httpd_req_t* req) {
             send_unauthorized(req);                   \
             return ESP_FAIL;                          \
         }                                             \
+    } while (0)
+
+// Guard for admin-only handlers: requires API auth AND an admin-level role
+// (the climate-only "user" gets a 403).
+#define REQUIRE_ADMIN(req)                                                  \
+    do {                                                                    \
+        if (!api_authorized(req)) { send_unauthorized(req); return ESP_FAIL; } \
+        if (!admin_authorized(req)) {                                       \
+            set_cors(req);                                                  \
+            httpd_resp_set_status(req, "403 Forbidden");                    \
+            httpd_resp_set_type(req, "application/json");                   \
+            httpd_resp_sendstr(req, "{\"error\":\"admin access required\"}"); \
+            return ESP_FAIL;                                                \
+        }                                                                   \
     } while (0)
 
 
@@ -276,7 +297,7 @@ esp_err_t handle_post_settings(httpd_req_t* req) {
 // ── POST /api/system/restart ───────────────────────────────────────────
 esp_err_t handle_restart(httpd_req_t* req) {
     set_cors(req);
-    REQUIRE_API_AUTH(req);
+    REQUIRE_ADMIN(req);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"status\":\"restarting\"}");
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -287,7 +308,7 @@ esp_err_t handle_restart(httpd_req_t* req) {
 // ── POST /api/system/factory_reset ─────────────────────────────────────
 esp_err_t handle_factory_reset(httpd_req_t* req) {
     set_cors(req);
-    REQUIRE_API_AUTH(req);
+    REQUIRE_ADMIN(req);
     wifi::erase_credentials();
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"status\":\"reset\"}");
@@ -299,7 +320,7 @@ esp_err_t handle_factory_reset(httpd_req_t* req) {
 // ── POST /api/ota — stream a raw .bin upload into the inactive slot ─────
 esp_err_t handle_ota_upload(httpd_req_t* req) {
     set_cors(req);
-    REQUIRE_API_AUTH(req);
+    REQUIRE_ADMIN(req);
     int total = req->content_len;
     if (ota::local_begin(total > 0 ? total : 0) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
@@ -337,7 +358,7 @@ esp_err_t handle_ota_upload(httpd_req_t* req) {
 // ── POST /api/ota/url — pull firmware from a URL (background) ───────────
 esp_err_t handle_ota_url(httpd_req_t* req) {
     set_cors(req);
-    REQUIRE_API_AUTH(req);
+    REQUIRE_ADMIN(req);
     char* body = recv_body(req);
     if (!body) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
@@ -369,7 +390,7 @@ esp_err_t handle_ota_url(httpd_req_t* req) {
 // ── GET /api/ota/status ────────────────────────────────────────────────
 esp_err_t handle_ota_status(httpd_req_t* req) {
     set_cors(req);
-    REQUIRE_API_AUTH(req);
+    REQUIRE_ADMIN(req);
     ota::Status s = ota::get_status();
     const char* state = "idle";
     switch (s.state) {
@@ -394,7 +415,7 @@ esp_err_t handle_ota_status(httpd_req_t* req) {
 // ── GET /api/update — cached GitHub release check result ───────────────
 esp_err_t handle_update_get(httpd_req_t* req) {
     set_cors(req);
-    REQUIRE_API_AUTH(req);
+    REQUIRE_ADMIN(req);
     ota::UpdateInfo u = ota::get_update_info();
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "current", u.current_version.c_str());
@@ -442,7 +463,7 @@ std::string requester_str(httpd_req_t* req) {
 
 esp_err_t handle_update_check(httpd_req_t* req) {
     set_cors(req);
-    REQUIRE_API_AUTH(req);
+    REQUIRE_ADMIN(req);
     std::string who = requester_str(req);
     ESP_LOGI(TAG, "/api/update/check from %s", who.c_str());
     ota::check_now(who.c_str());
@@ -453,7 +474,7 @@ esp_err_t handle_update_check(httpd_req_t* req) {
 // ── POST /api/update/install — install the latest GitHub release ───────
 esp_err_t handle_update_install(httpd_req_t* req) {
     set_cors(req);
-    REQUIRE_API_AUTH(req);
+    REQUIRE_ADMIN(req);
     ESP_LOGI(TAG, "/api/update/install from %s", requester_str(req).c_str());
     esp_err_t err = ota::install_latest();
     httpd_resp_set_type(req, "application/json");
@@ -467,7 +488,7 @@ esp_err_t handle_update_install(httpd_req_t* req) {
 // ── GET /api/mqtt — current broker settings (password masked) ──────────
 esp_err_t handle_mqtt_get(httpd_req_t* req) {
     set_cors(req);
-    REQUIRE_API_AUTH(req);
+    REQUIRE_ADMIN(req);
     hvac_mqtt::StoredSettings s = hvac_mqtt::get_settings();
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "host", s.host.c_str());
@@ -489,7 +510,7 @@ esp_err_t handle_mqtt_get(httpd_req_t* req) {
 // ── POST /api/mqtt — save broker settings to NVS, then reboot ───────────
 esp_err_t handle_mqtt_post(httpd_req_t* req) {
     set_cors(req);
-    REQUIRE_API_AUTH(req);
+    REQUIRE_ADMIN(req);
     char* body = recv_body(req);
     if (!body) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
@@ -541,7 +562,7 @@ esp_err_t handle_mqtt_post(httpd_req_t* req) {
 // ── GET /api/wifi — current WiFi network (password never returned) ─────
 esp_err_t handle_wifi_get(httpd_req_t* req) {
     set_cors(req);
-    REQUIRE_API_AUTH(req);
+    REQUIRE_ADMIN(req);
     wifi::Mode m = wifi::get_mode();
     const char* mode = m == wifi::Mode::CONNECTED    ? "connected"
                      : m == wifi::Mode::CONNECTING   ? "connecting"
@@ -565,7 +586,7 @@ esp_err_t handle_wifi_get(httpd_req_t* req) {
 // ── POST /api/wifi — set network credentials to NVS, then reboot ───────
 esp_err_t handle_wifi_post(httpd_req_t* req) {
     set_cors(req);
-    REQUIRE_API_AUTH(req);
+    REQUIRE_ADMIN(req);
     char* body = recv_body(req);
     if (!body) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
@@ -621,22 +642,23 @@ esp_err_t handle_login(httpd_req_t* req) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
         return ESP_FAIL;
     }
-    const cJSON* ju = cJSON_GetObjectItem(json, "username");
     const cJSON* jp = cJSON_GetObjectItem(json, "password");
-    const char* user = (ju && cJSON_IsString(ju)) ? ju->valuestring : "";
     const char* pass = (jp && cJSON_IsString(jp)) ? jp->valuestring : "";
 
     char token[AUTH_SESSION_TOKEN_LEN + 1] = {0};
-    bool ok = auth_mgr_login(user, pass, token);
+    auth_role_t role = auth_mgr_login(pass, token);
     cJSON_Delete(json);
 
     httpd_resp_set_type(req, "application/json");
-    if (!ok) {
+    if (role == AUTH_ROLE_NONE) {
         httpd_resp_set_status(req, "401 Unauthorized");
-        return httpd_resp_sendstr(req, "{\"error\":\"invalid credentials\"}");
+        return httpd_resp_sendstr(req, "{\"error\":\"invalid password\"}");
     }
     if (token[0] != '\0') set_session_cookie(req, token);
-    return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+    const char* rname = role == AUTH_ROLE_ADMIN ? "admin" : "user";
+    char out[48];
+    snprintf(out, sizeof(out), "{\"status\":\"ok\",\"role\":\"%s\"}", rname);
+    return httpd_resp_sendstr(req, out);
 }
 
 // ── POST /api/logout ───────────────────────────────────────────────────
@@ -652,15 +674,27 @@ esp_err_t handle_logout(httpd_req_t* req) {
 // ── GET /api/auth — auth config + whether this client is authenticated ──
 esp_err_t handle_auth_get(httpd_req_t* req) {
     set_cors(req);
-    bool authed = web_authorized(req);
+    auth_role_t role;
+    if (!auth_mgr_web_auth_enabled()) {
+        role = AUTH_ROLE_ADMIN;  // no web login → full access
+    } else {
+        char tok[AUTH_SESSION_TOKEN_LEN + 1];
+        role = get_cookie_token(req, tok, sizeof(tok)) ? auth_mgr_session_role(tok)
+                                                       : AUTH_ROLE_NONE;
+    }
+    bool authed = role != AUTH_ROLE_NONE;
+    const char* rname = role == AUTH_ROLE_ADMIN ? "admin"
+                        : role == AUTH_ROLE_USER ? "user" : "none";
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "web_auth_enabled", auth_mgr_web_auth_enabled());
     cJSON_AddBoolToObject(root, "api_auth_enabled", auth_mgr_api_auth_enabled());
     cJSON_AddStringToObject(root, "username", auth_mgr_get_username());
+    cJSON_AddStringToObject(root, "role", rname);
     cJSON_AddBoolToObject(root, "web_password_set", auth_mgr_web_password_set());
+    cJSON_AddBoolToObject(root, "user_password_set", auth_mgr_user_password_set());
     cJSON_AddBoolToObject(root, "authenticated", authed);
-    // Only reveal the API key to an authorized client.
-    if (authed) {
+    // Only reveal the API key to an admin client.
+    if (role == AUTH_ROLE_ADMIN) {
         char key[AUTH_API_KEY_LEN + 1] = {0};
         if (auth_mgr_get_api_key(key)) cJSON_AddStringToObject(root, "api_key", key);
     }
@@ -672,10 +706,10 @@ esp_err_t handle_auth_get(httpd_req_t* req) {
     return ESP_OK;
 }
 
-// ── POST /api/auth — update auth settings (browser-session gated) ───────
+// ── POST /api/auth — update auth settings (admin only) ─────────────────
 esp_err_t handle_auth_post(httpd_req_t* req) {
     set_cors(req);
-    if (!web_authorized(req)) { send_unauthorized(req); return ESP_FAIL; }
+    if (!admin_authorized(req)) { send_unauthorized(req); return ESP_FAIL; }
     char* body = recv_body(req);
     if (!body) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
@@ -689,21 +723,22 @@ esp_err_t handle_auth_post(httpd_req_t* req) {
     }
 
     const cJSON* v;
-    // Credentials first, so enabling web auth in the same request uses them.
-    const char* new_user = nullptr;
-    const char* new_pass = nullptr;
-    if ((v = cJSON_GetObjectItem(json, "username")) && cJSON_IsString(v) &&
-        v->valuestring[0] != '\0')
-        new_user = v->valuestring;
+    // Admin password first, so enabling web auth in the same request uses it.
     if ((v = cJSON_GetObjectItem(json, "password")) && cJSON_IsString(v) &&
         v->valuestring[0] != '\0')
-        new_pass = v->valuestring;
-    if (new_user || new_pass) auth_mgr_set_credentials(new_user, new_pass);
+        auth_mgr_set_admin_password(v->valuestring);
+
+    // Climate-only "user" account: set its password, or remove it.
+    if ((v = cJSON_GetObjectItem(json, "user_password")) && cJSON_IsString(v) &&
+        v->valuestring[0] != '\0')
+        auth_mgr_set_user_password(v->valuestring);
+    if ((v = cJSON_GetObjectItem(json, "remove_user")) && cJSON_IsTrue(v))
+        auth_mgr_set_user_password(nullptr);
 
     if ((v = cJSON_GetObjectItem(json, "web_auth_enabled")) && cJSON_IsBool(v)) {
         bool want_web = cJSON_IsTrue(v);
-        // Never allow requiring web login without a password — that would lock
-        // the UI out. Credentials above are applied first, so a password set in
+        // Never allow requiring web login without an admin password — that would
+        // lock the UI out. The password above is applied first, so one set in
         // this same request counts.
         if (want_web && !auth_mgr_web_password_set()) {
             cJSON_Delete(json);
@@ -730,7 +765,8 @@ esp_err_t handle_auth_post(httpd_req_t* req) {
     cJSON_AddStringToObject(root, "status", "ok");
     cJSON_AddBoolToObject(root, "web_auth_enabled", auth_mgr_web_auth_enabled());
     cJSON_AddBoolToObject(root, "api_auth_enabled", auth_mgr_api_auth_enabled());
-    cJSON_AddStringToObject(root, "username", auth_mgr_get_username());
+    cJSON_AddBoolToObject(root, "web_password_set", auth_mgr_web_password_set());
+    cJSON_AddBoolToObject(root, "user_password_set", auth_mgr_user_password_set());
     if (key[0] != '\0') cJSON_AddStringToObject(root, "api_key", key);
     char* str = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");

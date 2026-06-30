@@ -28,30 +28,54 @@ extern "C" {
 // Maximum password length
 #define AUTH_MAX_PASSWORD_LEN 64
 
+/// Access role attached to a web session. The "user" role is a shared,
+/// climate-only login; "admin" has full access. Roles only apply to web
+/// sessions — an API key or web-auth-disabled device is always treated as
+/// admin.
+typedef enum {
+    AUTH_ROLE_NONE = 0,
+    AUTH_ROLE_USER = 1,
+    AUTH_ROLE_ADMIN = 2,
+} auth_role_t;
+
 /// Initialize the auth manager (loads settings from NVS). Safe to call once;
 /// requires nvs_flash_init() to have already run.
 void auth_mgr_init(void);
 
-// ── Web authentication (username/password + session cookie) ────────────────
+// ── Web authentication (password + session cookie) ─────────────────────────
 
 bool auth_mgr_web_auth_enabled(void);
 void auth_mgr_set_web_auth_enabled(bool enabled);
 
-/// Set credentials. Pass NULL/empty to keep the existing value. The password
-/// is hashed (SHA-256) before storage. All sessions are invalidated on change.
-bool auth_mgr_set_credentials(const char* username, const char* password);
+/// Set the admin password (hashed with SHA-256). The admin username is fixed
+/// to "admin" and cannot be changed. All sessions are invalidated on change.
+bool auth_mgr_set_admin_password(const char* password);
+
+/// Whether the admin password is set. Web auth must not be enabled while this
+/// is false (there would be no way to log in).
+bool auth_mgr_web_password_set(void);
+
+/// Set (or, with NULL/empty, remove) the shared climate-only "user" password.
+/// Existing user-role sessions are invalidated on change.
+bool auth_mgr_set_user_password(const char* password);
+
+/// Whether the climate-only "user" account is enabled (password set).
+bool auth_mgr_user_password_set(void);
 
 const char* auth_mgr_get_username(void);
 
-/// Whether a web-UI password is currently set. Web auth must not be enabled
-/// while this is false (there would be no way to log in).
-bool auth_mgr_web_password_set(void);
-
-/// Validate username/password and, on success, create a session. The token is
-/// written to @p session_token (buffer must be AUTH_SESSION_TOKEN_LEN+1).
-bool auth_mgr_login(const char* username, const char* password, char* session_token);
+/// Password-only login: the password is matched against the admin then the
+/// user account. Returns the matched role (AUTH_ROLE_NONE on failure). On
+/// success a session is created and its token written to @p session_token
+/// (buffer must be AUTH_SESSION_TOKEN_LEN+1).
+auth_role_t auth_mgr_login(const char* password, char* session_token);
 
 bool auth_mgr_validate_session(const char* token);
+
+/// Role for a valid, unexpired session (AUTH_ROLE_NONE if invalid). Returns
+/// AUTH_ROLE_ADMIN when web auth is disabled.
+auth_role_t auth_mgr_session_role(const char* token);
+
 void auth_mgr_logout(const char* token);
 void auth_mgr_logout_all(void);
 
