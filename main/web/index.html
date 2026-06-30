@@ -96,6 +96,35 @@ display:flex;align-items:center;justify-content:center}
 .iconbtn:hover{background:#30363d}
 .iconbtn:disabled{opacity:.4;cursor:not-allowed}
 .iconbtn:disabled:hover{background:#21262d}
+/* ── Climate dial ───────────────────────────────────────────── */
+.climate-card{display:flex;flex-direction:column;align-items:center}
+.dial-wrap{position:relative;width:260px;max-width:80vw;margin:6px auto 2px;touch-action:none}
+.dial-wrap svg{width:100%;height:auto;display:block}
+.dtrack{fill:none;stroke:#21262d;stroke-width:12;stroke-linecap:round}
+.dfill{fill:none;stroke:#3a4150;stroke-width:12;stroke-linecap:round;transition:stroke .3s}
+.dknob{fill:#fff;stroke:#0e1116;stroke-width:2}
+.rdot{fill:#8b949e}
+.dial-center{position:absolute;inset:0;display:flex;flex-direction:column;
+align-items:center;justify-content:center;pointer-events:none;text-align:center}
+.dc-mode{font-size:.78em;letter-spacing:.08em;color:#8b949e;text-transform:uppercase}
+.dc-temp{font-size:3.1em;font-weight:300;line-height:1.05;color:#e6edf3}
+.dc-unit{font-size:.4em;color:#8b949e;vertical-align:super;margin-left:2px}
+.dc-room{font-size:.78em;color:#8b949e;margin-top:2px}
+.dial-wrap.off .dc-temp{color:#566270}
+.dial-btn{position:absolute;bottom:14%;width:40px;height:40px;border-radius:50%;
+border:1px solid #30363d;background:#21262d;color:#e6edf3;font-size:1.3em;line-height:1;
+cursor:pointer;display:flex;align-items:center;justify-content:center}
+.dial-btn:hover{background:#30363d}
+.dial-btn.dec{left:6%}
+.dial-btn.inc{right:6%}
+.dial-btn:disabled{opacity:.35;cursor:not-allowed}
+.modes{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin:10px 0 2px}
+.modes button{flex:1 1 auto;min-width:58px;padding:8px 6px;border-radius:8px;
+border:1px solid #30363d;background:#0e1116;color:#c9d1d9;font-size:.82em;cursor:pointer;
+display:flex;align-items:center;justify-content:center;gap:5px}
+.modes button:hover{background:#161b22}
+.modes button.on{color:#fff;border-color:transparent}
+.modes button .mi{font-size:1.05em;line-height:1}
 </style>
 </head>
 <body>
@@ -136,54 +165,57 @@ display:flex;align-items:center;justify-content:center}
   <div class="note" id="stubNote">Protocol engine is in development — controls are wired
   end-to-end but the unit link is a stub until the CN105 packet engine lands.</div>
 
-  <div class="card">
-    <h2>Room</h2>
-    <div class="room"><span class="t" id="roomTemp">--</span><span class="u">°C</span></div>
-    <div class="op" id="opState">idle</div>
-  </div>
-
-  <div class="card" id="controls">
-    <h2>Controls</h2>
-    <div class="row">
-      <label>Power</label>
-      <div class="toggle"><input type="checkbox" id="power" onchange="setPower(this.checked)"><span class="slider" onclick="document.getElementById('power').click()"></span></div>
-    </div>
-    <div class="row">
-      <label>Mode</label>
-      <select id="mode" onchange="setField('mode',this.value)">
-        <option>HEAT</option><option>COOL</option><option>DRY</option>
-        <option>FAN</option><option>AUTO</option>
-      </select>
-    </div>
-    <div class="row">
-      <label>Setpoint</label>
-      <div class="stepper">
-        <button onclick="bumpTemp(-0.5)">−</button>
-        <span class="val"><span id="setTemp">--</span>°C</span>
-        <button onclick="bumpTemp(0.5)">+</button>
+  <div class="card climate-card" id="controls">
+    <div class="dial-wrap" id="dialWrap">
+      <svg id="dialSvg" viewBox="0 0 200 200" aria-label="Temperature dial">
+        <path id="dialTrack" class="dtrack"></path>
+        <path id="dialFill" class="dfill"></path>
+        <circle id="roomDot" class="rdot" r="4" style="display:none"></circle>
+        <circle id="dialKnob" class="dknob" r="9" style="display:none"></circle>
+      </svg>
+      <div class="dial-center">
+        <div class="dc-mode" id="dialMode">--</div>
+        <div class="dc-temp"><span id="setTemp">--</span><span class="dc-unit">°C</span></div>
+        <div class="dc-room"><span id="roomTemp">--</span>° room</div>
       </div>
+      <button class="dial-btn dec" id="tDec" onclick="bumpTemp(-0.5)" aria-label="Lower setpoint">−</button>
+      <button class="dial-btn inc" id="tInc" onclick="bumpTemp(0.5)" aria-label="Raise setpoint">+</button>
     </div>
-    <div class="row">
-      <label>Fan</label>
-      <select id="fan" onchange="setField('fan',this.value)">
-        <option>AUTO</option><option>QUIET</option><option>1</option>
-        <option>2</option><option>3</option><option>4</option>
-      </select>
+    <div class="op" id="opState">idle</div>
+
+    <div class="modes" id="modePills">
+      <button data-mode="OFF"  onclick="setMode('OFF')"><span class="mi">⏻</span>Off</button>
+      <button data-mode="HEAT" onclick="setMode('HEAT')"><span class="mi">☀</span>Heat</button>
+      <button data-mode="COOL" onclick="setMode('COOL')"><span class="mi">❄</span>Cool</button>
+      <button data-mode="AUTO" onclick="setMode('AUTO')"><span class="mi">⇄</span>Auto</button>
+      <button data-mode="DRY"  onclick="setMode('DRY')"><span class="mi">≈</span>Dry</button>
+      <button data-mode="FAN"  onclick="setMode('FAN')"><span class="mi">✦</span>Fan</button>
     </div>
-    <div class="row">
-      <label>Vane</label>
-      <select id="vane" onchange="setField('vane',this.value)">
-        <option>AUTO</option><option>1</option><option>2</option><option>3</option>
-        <option>4</option><option>5</option><option>SWING</option>
-      </select>
-    </div>
-    <div class="row">
-      <label>Wide Vane</label>
-      <select id="wideVane" onchange="setField('wideVane',this.value)">
-        <option>&lt;&lt;</option><option>&lt;</option><option>|</option>
-        <option>&gt;</option><option>&gt;&gt;</option><option>&lt;&gt;</option><option>SWING</option>
-      </select>
-    </div>
+
+    <details class="adv">
+      <summary>Fan &amp; vanes</summary>
+      <div class="row">
+        <label>Fan</label>
+        <select id="fan" onchange="setField('fan',this.value)">
+          <option>AUTO</option><option>QUIET</option><option>1</option>
+          <option>2</option><option>3</option><option>4</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>Vane</label>
+        <select id="vane" onchange="setField('vane',this.value)">
+          <option>AUTO</option><option>1</option><option>2</option><option>3</option>
+          <option>4</option><option>5</option><option>SWING</option>
+        </select>
+      </div>
+      <div class="row" style="margin-bottom:0">
+        <label>Wide Vane</label>
+        <select id="wideVane" onchange="setField('wideVane',this.value)">
+          <option>&lt;&lt;</option><option>&lt;</option><option>|</option>
+          <option>&gt;</option><option>&gt;&gt;</option><option>&lt;&gt;</option><option>SWING</option>
+        </select>
+      </div>
+    </details>
   </div>
   </div><!-- /panel-climate -->
 
@@ -386,21 +418,61 @@ async function refresh(){
 
     if(!userEditing){
       const c=await (await fetch('/api/settings')).json();
-      $('power').checked=(c.power==='ON');
-      if(c.mode)$('mode').value=c.mode;
+      climate.power=(c.power==='ON');
+      climate.mode=c.mode||climate.mode;
+      climate.temp=c.temperature!=null?c.temperature:climate.temp;
+      climate.room=(c.roomTemperature!=null&&c.roomTemperature>0)?c.roomTemperature:null;
+      climate.operating=!!c.operating;
       if(c.fan)$('fan').value=c.fan;
       if(c.vane)$('vane').value=c.vane;
       if(c.wideVane)$('wideVane').value=c.wideVane;
-      $('setTemp').textContent=c.temperature!=null?c.temperature.toFixed(1):'--';
-      $('roomTemp').textContent=c.roomTemperature!=null&&c.roomTemperature>0?c.roomTemperature.toFixed(1):'--';
-      const op=$('opState');
-      op.textContent=c.operating?'heating/cooling':'idle';
-      op.className='op'+(c.operating?' active':'');
+      renderClimate();
     }
   }catch(e){
     badge($('bWifi'),false);
     $('subtitle').textContent='disconnected';
   }
+}
+
+// ── Climate dial ──────────────────────────────────────────────────────
+let climate={power:false,mode:'HEAT',temp:21,room:null,operating:false};
+const T_MIN=16,T_MAX=31,A_START=225,A_SWEEP=270,DR=80,DC=100;
+const MODE_COLOR={HEAT:'#ff7b29',COOL:'#3b9bff',AUTO:'#3fb950',DRY:'#9aa4ad',FAN:'#9aa4ad'};
+function tToAngle(t){return A_START+((t-T_MIN)/(T_MAX-T_MIN))*A_SWEEP;}
+function polar(aDeg,r){const a=aDeg*Math.PI/180;return [DC+r*Math.sin(a),DC-r*Math.cos(a)];}
+function arc(t0,t1){
+  const a0=tToAngle(t0),a1=tToAngle(t1);
+  const steps=Math.max(2,Math.round(Math.abs(a1-a0)/4));
+  let d='';
+  for(let i=0;i<=steps;i++){const a=a0+(a1-a0)*i/steps;const q=polar(a,DR);
+    d+=(i?'L':'M')+q[0].toFixed(1)+' '+q[1].toFixed(1)+' ';}
+  return d.trim();
+}
+function renderClimate(){
+  const t=Math.max(T_MIN,Math.min(T_MAX,climate.temp||21));
+  $('setTemp').textContent=climate.temp!=null?Number(t).toFixed(1):'--';
+  $('roomTemp').textContent=climate.room!=null?climate.room.toFixed(1):'--';
+  const color=climate.power?(MODE_COLOR[climate.mode]||'#9aa4ad'):'#3a4150';
+  $('dialFill').setAttribute('d',arc(T_MIN,t));
+  $('dialFill').style.stroke=color;
+  const kn=$('dialKnob'),kp=polar(tToAngle(t),DR);
+  kn.setAttribute('cx',kp[0]);kn.setAttribute('cy',kp[1]);
+  kn.style.display=climate.power?'':'none';
+  const rd=$('roomDot');
+  if(climate.room!=null){const rp=polar(tToAngle(Math.max(T_MIN,Math.min(T_MAX,climate.room))),DR);
+    rd.setAttribute('cx',rp[0]);rd.setAttribute('cy',rp[1]);rd.style.display='';}
+  else rd.style.display='none';
+  $('dialMode').textContent=climate.power?climate.mode:'OFF';
+  $('dialWrap').classList.toggle('off',!climate.power);
+  const op=$('opState');
+  op.textContent=!climate.power?'off':(climate.operating?'heating / cooling':'idle');
+  op.className='op'+(climate.power&&climate.operating?' active':'');
+  $('tDec').disabled=$('tInc').disabled=!climate.power;
+  [...document.querySelectorAll('#modePills button')].forEach(b=>{
+    const m=b.dataset.mode, on=(m==='OFF')?!climate.power:(climate.power&&climate.mode===m);
+    b.classList.toggle('on',on);
+    b.style.background=on?(m==='OFF'?'#566270':(MODE_COLOR[m]||'#566270')):'';
+  });
 }
 
 async function post(body){
@@ -413,14 +485,48 @@ async function post(body){
   }
 }
 
-function setPower(on){post({power:on?'ON':'OFF'})}
 function setField(k,v){const o={};o[k]=v;post(o)}
-function bumpTemp(d){
-  const el=$('setTemp');let t=parseFloat(el.textContent);
-  if(isNaN(t))t=21;t=Math.max(16,Math.min(31,t+d));
-  el.textContent=t.toFixed(1);
-  post({temperature:t});
+function setMode(m){
+  if(m==='OFF'){climate.power=false;renderClimate();post({power:'OFF'});return;}
+  climate.power=true;climate.mode=m;renderClimate();
+  post({power:'ON',mode:m});
 }
+function bumpTemp(d){
+  if(!climate.power)return;
+  let t=parseFloat($('setTemp').textContent);if(isNaN(t))t=21;
+  t=Math.max(T_MIN,Math.min(T_MAX,Math.round((t+d)*2)/2));
+  climate.temp=t;renderClimate();post({temperature:t});
+}
+
+// Drag / tap on the dial to set the temperature.
+let dialDragging=false;
+function dialTemp(ev){
+  const r=$('dialSvg').getBoundingClientRect();
+  const px=(ev.clientX-r.left)/r.width*200, py=(ev.clientY-r.top)/r.height*200;
+  let a=Math.atan2(px-DC,DC-py)*180/Math.PI; if(a<0)a+=360;
+  let rel=a-A_START; if(rel<0)rel+=360;
+  if(rel>A_SWEEP) rel=(rel-A_SWEEP)<(360-rel)?A_SWEEP:0;  // clamp out of the bottom gap
+  let t=T_MIN+rel/A_SWEEP*(T_MAX-T_MIN);
+  return Math.max(T_MIN,Math.min(T_MAX,Math.round(t*2)/2));
+}
+function dialDown(ev){
+  if(!climate.power)return;
+  dialDragging=true;userEditing=true;
+  try{$('dialSvg').setPointerCapture(ev.pointerId)}catch(e){}
+  climate.temp=dialTemp(ev);renderClimate();ev.preventDefault();
+}
+function dialMove(ev){if(!dialDragging)return;climate.temp=dialTemp(ev);renderClimate();}
+function dialEnd(){if(!dialDragging)return;dialDragging=false;post({temperature:climate.temp});}
+function initDial(){
+  $('dialTrack').setAttribute('d',arc(T_MIN,T_MAX));
+  const sv=$('dialSvg');
+  sv.addEventListener('pointerdown',dialDown);
+  sv.addEventListener('pointermove',dialMove);
+  sv.addEventListener('pointerup',dialEnd);
+  sv.addEventListener('pointercancel',dialEnd);
+  renderClimate();
+}
+initDial();
 
 async function sysPost(url,msg){
   if(!confirm(msg))return;
