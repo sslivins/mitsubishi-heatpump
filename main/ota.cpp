@@ -415,7 +415,12 @@ void checker_task(void*) {
     for (;;) {
         // Sleep until the interval elapses, or wake early when check_now() fires.
         // A non-zero return means we were notified (on-demand); zero is the timer.
-        uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(s_interval_ms));
+        // NOTE: pdMS_TO_TICKS() multiplies in 32-bit (TickType_t), so a 6h value
+        // at CONFIG_FREERTOS_HZ=1000 (21,600,000 ms * 1000) overflows uint32 and
+        // collapses the "6 hour" wait to ~2 minutes. Compute ticks in 64-bit.
+        TickType_t wait_ticks =
+            (TickType_t)(((uint64_t)s_interval_ms * configTICK_RATE_HZ) / 1000ULL);
+        uint32_t notified = ulTaskNotifyTake(pdTRUE, wait_ticks);
         std::string src;
         {
             std::lock_guard<std::mutex> lk(s_upd_mtx);
