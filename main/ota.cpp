@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
 #include <mutex>
 
 #include "esp_log.h"
@@ -15,7 +16,6 @@
 #include "esp_crt_bundle.h"
 #include "esp_app_desc.h"
 #include "esp_timer.h"
-#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -250,8 +250,10 @@ bool busy() {
 // ── GitHub release auto-update poller ──────────────────────────────────
 namespace {
 
-constexpr char kGithubApiUrl[] =
-    "https://api.github.com/repos/sslivins/mitsubishi-heatpump/releases/latest";
+constexpr char kReleasesLatestUrl[] =
+    "https://github.com/sslivins/mitsubishi-heatpump/releases/latest";
+constexpr char kReleaseDownloadFmt[] =
+    "https://github.com/sslivins/mitsubishi-heatpump/releases/download/%s/mitsubishi-heatpump.bin";
 
 std::mutex            s_upd_mtx;
 UpdateInfo            s_upd;
@@ -259,23 +261,16 @@ TaskHandle_t          s_checker = nullptr;
 uint32_t              s_interval_ms = 6 * 3600 * 1000;
 std::function<void()> s_on_changed;
 
-// Grows to hold the (chunked) GitHub API response body.
-struct RespBuf { char* data = nullptr; size_t len = 0; size_t cap = 0; };
+// Captures the Location response header from GitHub's 302 redirect so we can
+// read the latest tag without hitting the rate-limited api.github.com.
+struct CheckCtx { std::string location; };
 
-esp_err_t github_evt(esp_http_client_event_t* evt) {
-    if (evt->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
-    RespBuf* b = static_cast<RespBuf*>(evt->user_data);
-    if (!b) return ESP_OK;
-    if (b->len + evt->data_len + 1 > b->cap) {
-        size_t ncap = b->len + evt->data_len + 1024;
-        char* nd = static_cast<char*>(realloc(b->data, ncap));
-        if (!nd) return ESP_OK;  // OOM: keep what we have; parse will fail cleanly
-        b->data = nd;
-        b->cap  = ncap;
+esp_err_t check_evt(esp_http_client_event_t* evt) {
+    if (evt->event_id == HTTP_EVENT_ON_HEADER && evt->header_key &&
+        strcasecmp(evt->header_key, "Location") == 0) {
+        auto* c = static_cast<CheckCtx*>(evt->user_data);
+        if (c) c->location = evt->header_value ? evt->header_value : "";
     }
-    memcpy(b->data + b->len, evt->data, evt->data_len);
-    b->len += evt->data_len;
-    b->data[b->len] = '\0';
     return ESP_OK;
 }
 
@@ -301,76 +296,60 @@ void perform_check() {
         s_upd.current_version = cur;
     }
 
-    RespBuf buf;
     std::string latest, url, published, release_url, err_msg;
     bool ok = false;
-    bool no_release = false;  ///< 404: no published release → treat as up to date
+    bool no_release = false;  ///< no published release → treat as up to date
 
+    // Resolve the latest release via github.com's /releases/latest 302 redirect
+    // (Location: .../releases/tag/<tag>) rather than api.github.com, which imposes
+    // a 60-request/hour unauthenticated limit *per source IP* — a shared home IP
+    // (all units + browsers) exhausts it and the check then fails with HTTP 403.
+    CheckCtx ctx;
     esp_http_client_config_t cfg = {};
-    cfg.url = kGithubApiUrl;
-    cfg.event_handler = github_evt;
-    cfg.user_data = &buf;
+    cfg.url = kReleasesLatestUrl;
+    cfg.event_handler = check_evt;
+    cfg.user_data = &ctx;
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.timeout_ms = 15000;
-    cfg.buffer_size = 2048;
-    cfg.buffer_size_tx = 2048;
+    cfg.disable_auto_redirect = true;  // we want the 302 Location, not its target
 
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     if (cli) {
-        // GitHub requires a User-Agent; ask for the v3 JSON media type.
         esp_http_client_set_header(cli, "User-Agent", "mitsubishi-heatpump");
-        esp_http_client_set_header(cli, "Accept", "application/vnd.github+json");
         esp_err_t e = esp_http_client_perform(cli);
         int sc = esp_http_client_get_status_code(cli);
-        if (e == ESP_OK && sc == 200 && buf.data) {
-            cJSON* root = cJSON_Parse(buf.data);
-            if (root) {
-                cJSON* tag = cJSON_GetObjectItem(root, "tag_name");
-                if (cJSON_IsString(tag)) latest = tag->valuestring;
-                cJSON* pub = cJSON_GetObjectItem(root, "published_at");
-                if (cJSON_IsString(pub)) published = pub->valuestring;
-                cJSON* html = cJSON_GetObjectItem(root, "html_url");
-                if (cJSON_IsString(html)) release_url = html->valuestring;
-                cJSON* assets = cJSON_GetObjectItem(root, "assets");
-                if (cJSON_IsArray(assets)) {
-                    cJSON* a;
-                    cJSON_ArrayForEach(a, assets) {
-                        cJSON* nm = cJSON_GetObjectItem(a, "name");
-                        if (!cJSON_IsString(nm)) continue;
-                        const char* name = nm->valuestring;
-                        size_t nlen = strlen(name);
-                        // The release ships 4 .bin files (app + bootloader +
-                        // partition-table + ota_data); pick the app image only.
-                        bool is_bin = nlen >= 4 && strcmp(name + nlen - 4, ".bin") == 0;
-                        if (!is_bin || strstr(name, "mitsubishi-heatpump") == nullptr)
-                            continue;
-                        cJSON* du = cJSON_GetObjectItem(a, "browser_download_url");
-                        if (cJSON_IsString(du)) { url = du->valuestring; break; }
-                    }
+        if (e == ESP_OK && (sc == 301 || sc == 302 || sc == 307 || sc == 308)) {
+            static const char kMark[] = "/releases/tag/";
+            size_t p = ctx.location.find(kMark);
+            if (p != std::string::npos) {
+                latest = ctx.location.substr(p + sizeof(kMark) - 1);
+                size_t q = latest.find_first_of("?#\r\n /");
+                if (q != std::string::npos) latest.erase(q);
+                if (!latest.empty()) {
+                    char dl[256];
+                    snprintf(dl, sizeof(dl), kReleaseDownloadFmt, latest.c_str());
+                    url = dl;
+                    release_url = ctx.location;
+                    ok = true;
+                } else {
+                    err_msg = "empty tag in redirect";
                 }
-                cJSON_Delete(root);
-                ok = !latest.empty();
-                if (!ok) err_msg = "no tag_name in response";
             } else {
-                err_msg = "JSON parse failed";
-            }
-        } else {
-            if (sc == 404) {
-                // /releases/latest 404s when the repo has no published (non-draft,
-                // non-prerelease) release. That isn't an error — there's simply
-                // nothing newer to install, so report the device as up to date.
+                // Redirect to .../releases (no /tag/) => no published release yet.
                 no_release = true;
-            } else {
-                char tmp[64];
-                snprintf(tmp, sizeof(tmp), "HTTP %d (%s)", sc, esp_err_to_name(e));
-                err_msg = tmp;
             }
+        } else if (e == ESP_OK && sc == 404) {
+            // No published (non-draft) release — nothing newer; report up to date.
+            no_release = true;
+        } else {
+            char tmp[80];
+            snprintf(tmp, sizeof(tmp), "HTTP %d (%s)", sc, esp_err_to_name(e));
+            err_msg = tmp;
         }
         esp_http_client_cleanup(cli);
     } else {
         err_msg = "http client init failed";
     }
-    free(buf.data);
 
     {
         std::lock_guard<std::mutex> lk(s_upd_mtx);
