@@ -263,6 +263,17 @@ extern "C" void app_main() {
         ota::UpdateInfo u = ota::get_update_info();
         hvac_mqtt::publish_update_state(u.current_version, u.latest_version, u.release_url);
     });
+    // Stream install progress to HA's update entity so its modal shows a live
+    // progress bar instead of appearing to do nothing until the device reboots.
+    ota::set_on_progress([](const ota::Status& s) {
+        ota::UpdateInfo u = ota::get_update_info();
+        // While installing, report >= 0 (treat unknown size as 0%) so HA shows
+        // the bar as in-progress; any terminal state clears it (-1 -> null).
+        int pct = (s.state == ota::State::InProgress) ? (s.progress < 0 ? 0 : s.progress)
+                                                      : -1;
+        hvac_mqtt::publish_update_state(u.current_version, u.latest_version,
+                                        u.release_url, "", pct);
+    });
     ota::start_update_checker();
 
     // Heat pump protocol.

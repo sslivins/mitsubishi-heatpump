@@ -228,7 +228,8 @@ esp_err_t publish_update_discovery() {
 esp_err_t publish_update_state(const std::string& installed,
                                const std::string& latest,
                                const std::string& release_url,
-                               const std::string& release_summary) {
+                               const std::string& release_summary,
+                               int update_percentage) {
     if (!g_client) return ESP_ERR_INVALID_STATE;
 
     cJSON* root = cJSON_CreateObject();
@@ -240,6 +241,14 @@ esp_err_t publish_update_state(const std::string& installed,
         cJSON_AddStringToObject(root, "release_url", release_url.c_str());
     if (!release_summary.empty())
         cJSON_AddStringToObject(root, "release_summary", release_summary.c_str());
+    // Progress for HA's update modal. A number drives the progress bar; null
+    // resets the in-progress state (per the MQTT update integration schema).
+    if (update_percentage >= 0) {
+        cJSON_AddNumberToObject(root, "update_percentage", update_percentage);
+        cJSON_AddBoolToObject(root, "in_progress", true);
+    } else {
+        cJSON_AddNullToObject(root, "update_percentage");
+    }
 
     char* payload = cJSON_PrintUnformatted(root);
     std::string topic = t("/update/state");

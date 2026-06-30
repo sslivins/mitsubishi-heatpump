@@ -83,6 +83,11 @@ esp_err_t install_latest();
 /// successfully or not. Lets the app re-publish version state to HA, etc.
 void set_on_update_changed(std::function<void()> cb);
 
+/// Register a callback fired whenever the OTA install status/progress changes
+/// (state transition or a new integer percent). Lets the app stream progress to
+/// Home Assistant's update entity during an install. Fired from the OTA task.
+void set_on_progress(std::function<void(const Status&)> cb);
+
 Status get_status();
 bool   busy();
 

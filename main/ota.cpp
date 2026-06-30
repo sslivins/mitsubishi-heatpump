@@ -28,6 +28,7 @@ namespace {
 std::mutex  s_mtx;
 Status      s_status;
 bool        s_busy = false;
+std::function<void(const Status&)> s_on_progress;
 
 // Local-upload streaming state.
 esp_ota_handle_t       s_handle    = 0;
@@ -36,10 +37,18 @@ size_t                 s_total     = 0;
 size_t                 s_written   = 0;
 
 void set_status(State state, int progress, const char* msg) {
-    std::lock_guard<std::mutex> lock(s_mtx);
-    s_status.state = state;
-    s_status.progress = progress;
-    s_status.message = msg ? msg : "";
+    Status snap;
+    bool changed;
+    {
+        std::lock_guard<std::mutex> lock(s_mtx);
+        changed = (s_status.state != state) || (s_status.progress != progress);
+        s_status.state = state;
+        s_status.progress = progress;
+        s_status.message = msg ? msg : "";
+        snap = s_status;
+    }
+    // Notify outside the lock — the callback publishes to MQTT.
+    if (changed && s_on_progress) s_on_progress(snap);
 }
 
 // Atomically claim the OTA pipeline; returns false if an update is already busy.
@@ -436,6 +445,10 @@ esp_err_t install_latest() {
 
 void set_on_update_changed(std::function<void()> cb) {
     s_on_changed = std::move(cb);
+}
+
+void set_on_progress(std::function<void(const Status&)> cb) {
+    s_on_progress = std::move(cb);
 }
 
 }  // namespace ota
