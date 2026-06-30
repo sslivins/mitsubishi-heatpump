@@ -109,6 +109,7 @@ justify-content:center;padding:16px;z-index:100}
   <h1>Mitsubishi Heat Pump</h1>
   <div class="hver" id="hdrver">firmware v—</div>
   <p class="sub" id="subtitle">connecting…</p>
+  <div id="offline" class="hidden" style="margin:8px auto;max-width:420px;padding:8px 12px;border-radius:8px;background:#5a1e1e;color:#ffd9d9;font-size:.8em">Connection lost — reconnecting…</div>
 
   <div class="badges">
     <span class="badge" id="bWifi"><span class="dot"></span>WiFi</span>
@@ -298,6 +299,26 @@ justify-content:center;padding:16px;z-index:100}
 function $(id){return document.getElementById(id)}
 let userEditing=false;
 
+// ── Connectivity-aware fetch ───────────────────────────────────────────
+// Wrap every polled request with a timeout and a shared "reconnecting"
+// banner, so a transient failure degrades gracefully instead of breaking
+// the page or silently spinning.
+let offline=false;
+function setOffline(b){
+  if(b===offline)return; offline=b;
+  $('offline').classList.toggle('hidden',!b);
+}
+async function jget(url,opts){
+  const ctrl=new AbortController();
+  const t=setTimeout(()=>ctrl.abort(),6000);
+  try{
+    const r=await fetch(url,Object.assign({signal:ctrl.signal},opts||{}));
+    setOffline(false);
+    return r;
+  }catch(e){ setOffline(true); throw e; }
+  finally{ clearTimeout(t); }
+}
+
 function showTab(name){
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
   document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id==='panel-'+name));
@@ -313,7 +334,7 @@ function fmtUptime(s){
 
 async function refresh(){
   try{
-    const s=await (await fetch('/api/status')).json();
+    const s=await (await jget('/api/status')).json();
     badge($('bWifi'),true);
     badge($('bUnit'),s.unit_connected);
     badge($('bMqtt'),s.mqtt_connected);
@@ -462,7 +483,7 @@ function updMsg(m,cls){const el=$('updMsg');el.className='status '+cls;el.textCo
 
 async function refreshUpdate(){
   try{
-    const u=await (await fetch('/api/update')).json();
+    const u=await (await jget('/api/update')).json();
     $('updCur').textContent=u.current||'--';
     $('updLatest').textContent=u.checked?(u.latest||'--'):(u.checking?'checking…':'—');
     $('updCheckBtn').disabled=u.checking;
@@ -508,7 +529,7 @@ function mqMsg(m,cls){const el=$('mqMsg');el.className='status '+cls;el.textCont
 
 async function loadMqtt(){
   try{
-    const m=await (await fetch('/api/mqtt')).json();
+    const m=await (await jget('/api/mqtt')).json();
     $('mqHost').value=m.host||'';
     $('mqPort').value=m.port||1883;
     $('mqUser').value=m.username||'';
@@ -546,7 +567,7 @@ function wfMsg(m,cls){const el=$('wfMsg');el.className='status '+cls;el.textCont
 
 async function loadWifi(){
   try{
-    const w=await (await fetch('/api/wifi')).json();
+    const w=await (await jget('/api/wifi')).json();
     $('wifiSsid').textContent=w.ssid||'(not set)';
     $('wifiStat').textContent=w.mode||'--';
     $('wfPass').placeholder=w.password_set?'(unchanged)':'(none)';
@@ -648,14 +669,31 @@ function copyKey(){
   secMsg('API key copied','ok');
 }
 
+// ── Polling scheduler ──────────────────────────────────────────────────
+// Sequential (one in-flight request at a time) so a tab never hoards the
+// device's limited socket pool, and fully paused while the tab is hidden.
+// Cadence matches the old intervals: status 5s, wifi 15s, mqtt/update 30s.
+let pollTimer=null, tickN=0;
+async function pollOnce(){
+  await refresh();
+  if(tickN%3===0) await loadWifi();
+  if(tickN%6===0){ await refreshUpdate(); await loadMqtt(); }
+  tickN++;
+}
+function schedule(ms){ clearTimeout(pollTimer); pollTimer=setTimeout(tick,ms); }
+async function tick(){
+  if(document.hidden){ schedule(2000); return; }   // paused: just re-check visibility
+  try{ await pollOnce(); }catch(e){/* jget already flagged offline */}
+  schedule(offline?8000:5000);                      // back off while disconnected
+}
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) schedule(150); });
+window.addEventListener('focus',()=>schedule(150));
+
 // ── Startup (gated by auth) ────────────────────────────────────────────
 (async()=>{
   const ok=await loadAuth();
   if(!ok) return;  // login gate shown; loops start after login + reload
-  refresh();        setInterval(refresh,5000);
-  refreshUpdate();  setInterval(refreshUpdate,30000);
-  loadMqtt();       setInterval(loadMqtt,30000);
-  loadWifi();       setInterval(loadWifi,15000);
+  schedule(0);
 })();
 </script>
 </body>
