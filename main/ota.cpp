@@ -330,6 +330,11 @@ void perform_check() {
                     snprintf(dl, sizeof(dl), kReleaseDownloadFmt, latest.c_str());
                     url = dl;
                     release_url = ctx.location;
+                    // Normalize the tag for display/compare so it matches the
+                    // app's installed_version, which carries no 'v' prefix.
+                    // Otherwise HA compares "0.2.6" != "v0.2.6" and shows
+                    // "update available" forever even when already current.
+                    if (latest[0] == 'v' || latest[0] == 'V') latest.erase(0, 1);
                     ok = true;
                 } else {
                     err_msg = "empty tag in redirect";
