@@ -139,10 +139,12 @@ display:flex;align-items:center;justify-content:center;gap:5px}
     <button class="btn btn-warn" id="lgBtn" onclick="doLogin()">Sign in</button>
   </div>
 </div>
-<div class="wrap">
+<div class="wrap hidden" id="appWrap">
   <h1>Mitsubishi Heat Pump</h1>
   <div class="hver" id="hdrver">firmware v—</div>
   <p class="sub" id="subtitle">connecting…</p>
+  <button class="btn btn-danger hidden" id="hdrLogoutBtn" onclick="doLogout()"
+    style="width:auto;margin:6px auto 0;display:block">Sign out</button>
   <div id="offline" class="hidden" style="margin:8px auto;max-width:420px;padding:8px 12px;border-radius:8px;background:#5a1e1e;color:#ffd9d9;font-size:.8em">Connection lost — reconnecting…</div>
 
   <div class="badges" id="statusBadges">
@@ -789,6 +791,7 @@ function applyRole(){
   // The WiFi/Unit/MQTT badges are diagnostics for admins; hide them for the
   // climate-only user.
   $('statusBadges').style.display=user?'none':'';
+  $('hdrLogoutBtn').classList.toggle('hidden',!user);
   if(user) showTab('climate');
 }
 
@@ -807,6 +810,7 @@ async function loadAuth(){
       return false;
     }
     $('loginGate').classList.add('hidden');
+    $('appWrap').classList.remove('hidden');
     applyRole();
     $('secWeb').checked=a.web_auth_enabled;
     $('secApi').checked=a.api_auth_enabled;
@@ -816,7 +820,7 @@ async function loadAuth(){
     updateWebSaveState();
     updateUserSaveState();
     return true;
-  }catch(e){return true}
+  }catch(e){ $('appWrap').classList.remove('hidden'); return true }
 }
 
 async function doLogin(){
