@@ -657,6 +657,7 @@ esp_err_t handle_auth_get(httpd_req_t* req) {
     cJSON_AddBoolToObject(root, "web_auth_enabled", auth_mgr_web_auth_enabled());
     cJSON_AddBoolToObject(root, "api_auth_enabled", auth_mgr_api_auth_enabled());
     cJSON_AddStringToObject(root, "username", auth_mgr_get_username());
+    cJSON_AddBoolToObject(root, "web_password_set", auth_mgr_web_password_set());
     cJSON_AddBoolToObject(root, "authenticated", authed);
     // Only reveal the API key to an authorized client.
     if (authed) {
@@ -699,8 +700,22 @@ esp_err_t handle_auth_post(httpd_req_t* req) {
         new_pass = v->valuestring;
     if (new_user || new_pass) auth_mgr_set_credentials(new_user, new_pass);
 
-    if ((v = cJSON_GetObjectItem(json, "web_auth_enabled")) && cJSON_IsBool(v))
-        auth_mgr_set_web_auth_enabled(cJSON_IsTrue(v));
+    if ((v = cJSON_GetObjectItem(json, "web_auth_enabled")) && cJSON_IsBool(v)) {
+        bool want_web = cJSON_IsTrue(v);
+        // Never allow requiring web login without a password — that would lock
+        // the UI out. Credentials above are applied first, so a password set in
+        // this same request counts.
+        if (want_web && !auth_mgr_web_password_set()) {
+            cJSON_Delete(json);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "application/json");
+            set_cors(req);
+            httpd_resp_sendstr(req,
+                "{\"error\":\"Set a web-UI password before requiring login\"}");
+            return ESP_FAIL;
+        }
+        auth_mgr_set_web_auth_enabled(want_web);
+    }
     if ((v = cJSON_GetObjectItem(json, "api_auth_enabled")) && cJSON_IsBool(v))
         auth_mgr_set_api_auth_enabled(cJSON_IsTrue(v));
 
