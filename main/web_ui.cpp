@@ -725,13 +725,27 @@ esp_err_t handle_auth_post(httpd_req_t* req) {
     const cJSON* v;
     // Admin password first, so enabling web auth in the same request uses it.
     if ((v = cJSON_GetObjectItem(json, "password")) && cJSON_IsString(v) &&
-        v->valuestring[0] != '\0')
-        auth_mgr_set_admin_password(v->valuestring);
+        v->valuestring[0] != '\0') {
+        if (!auth_mgr_set_admin_password(v->valuestring)) {
+            cJSON_Delete(json);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "application/json");
+            return httpd_resp_sendstr(req,
+                "{\"error\":\"Admin password must differ from the user password\"}");
+        }
+    }
 
     // Climate-only "user" account: set its password, or remove it.
     if ((v = cJSON_GetObjectItem(json, "user_password")) && cJSON_IsString(v) &&
-        v->valuestring[0] != '\0')
-        auth_mgr_set_user_password(v->valuestring);
+        v->valuestring[0] != '\0') {
+        if (!auth_mgr_set_user_password(v->valuestring)) {
+            cJSON_Delete(json);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "application/json");
+            return httpd_resp_sendstr(req,
+                "{\"error\":\"User password must differ from the admin password\"}");
+        }
+    }
     if ((v = cJSON_GetObjectItem(json, "remove_user")) && cJSON_IsTrue(v))
         auth_mgr_set_user_password(nullptr);
 
