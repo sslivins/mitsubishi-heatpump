@@ -87,8 +87,13 @@ cursor:pointer;user-select:none;transition:.15s}
 justify-content:center;padding:16px;z-index:100}
 .overlay .card{width:100%;max-width:360px;margin:0}
 .overlay h1{margin-bottom:14px}
-.keyrow{display:flex;gap:8px}
-.keyrow input{flex:1;font-family:ui-monospace,monospace;font-size:.74em}
+.keyrow{display:flex;gap:8px;align-items:center}
+.keyrow input{flex:1;min-width:0;max-width:none;font-family:ui-monospace,monospace;font-size:.74em;
+background:#0e1116;color:#e6edf3;border:1px solid #30363d;border-radius:8px;padding:9px 10px;outline:none}
+.iconbtn{flex:0 0 auto;width:38px;height:38px;border-radius:8px;border:1px solid #30363d;
+background:#21262d;color:#e6edf3;font-size:1.2em;line-height:1;cursor:pointer;
+display:flex;align-items:center;justify-content:center}
+.iconbtn:hover{background:#30363d}
 </style>
 </head>
 <body>
@@ -290,16 +295,15 @@ justify-content:center;padding:16px;z-index:100}
     <h2>API Access</h2>
     <div class="row">
       <label>Require API key for /api</label>
-      <div class="toggle"><input type="checkbox" id="secApi"><span class="slider" onclick="document.getElementById('secApi').click()"></span></div>
+      <div class="toggle"><input type="checkbox" id="secApi" onchange="saveApiAuth()"><span class="slider" onclick="document.getElementById('secApi').click()"></span></div>
     </div>
-    <div class="mqf" style="align-items:flex-start"><label>API key</label>
-      <div class="keyrow" style="max-width:62%">
-        <input type="text" id="secKey" readonly placeholder="—"></div>
+    <label style="font-size:.85em;color:#c9d1d9;display:block;margin:4px 0 6px">API key</label>
+    <div class="keyrow">
+      <input type="text" id="secKey" readonly placeholder="&#8212;" title="Send this key in the X-API-Key header on /api requests">
+      <button class="iconbtn" onclick="regenKey()" title="Regenerate API key (invalidates the current one)" aria-label="Regenerate API key">&#x21bb;</button>
+      <button class="iconbtn" onclick="copyKey()" title="Copy API key to clipboard" aria-label="Copy API key">&#x29c9;</button>
     </div>
-    <button class="btn" onclick="copyKey()">Copy API key</button>
-    <button class="btn btn-warn" onclick="regenKey()">Regenerate API key</button>
     <div id="secApiMsg" class="status hidden" style="margin:10px 0"></div>
-    <button class="btn btn-warn" id="secApiSaveBtn" onclick="saveApiAuth()">Save API access</button>
   </div>
   </div><!-- /panel-system -->
 </div>
@@ -623,12 +627,17 @@ function secApiMsg(m,cls){const el=$('secApiMsg');el.className='status '+cls;el.
 function updateWebSaveState(){
   const enabling=$('secWeb').checked;
   const hasNewPass=$('secPass').value.length>0;
-  const ok=!enabling || hasNewPass || authState.pwSet;
+  // When enabling login, always require the user to set or change the
+  // password before saving — even if one is already stored.
+  const ok=!enabling || hasNewPass;
   $('secWebSaveBtn').disabled=!ok;
   const hint=$('secWebHint');
-  if(enabling && !authState.pwSet && !hasNewPass){
-    hint.textContent='Enter a password to require login.';
+  if(enabling && !hasNewPass){
+    hint.textContent=authState.pwSet?'Enter a new password to save changes.':'Enter a password to require login.';
     $('secPass').placeholder='(required)';
+  }else if(enabling){
+    hint.textContent='Password will be updated on save.';
+    $('secPass').placeholder='New password';
   }else{
     hint.textContent=authState.pwSet?'A password is set.':'No password set yet.';
     $('secPass').placeholder=authState.pwSet?'(unchanged)':'Set a password';
@@ -679,7 +688,7 @@ async function doLogout(){
 async function saveWebLogin(){
   const enabling=$('secWeb').checked;
   const u=$('secUser').value.trim(),p=$('secPass').value;
-  if(enabling && !authState.pwSet && !p){
+  if(enabling && !p){
     secWebMsg('Enter a password to require login.','err');return;
   }
   const body={web_auth_enabled:enabling};
@@ -698,15 +707,14 @@ async function saveWebLogin(){
 }
 
 async function saveApiAuth(){
-  const body={api_auth_enabled:$('secApi').checked};
-  $('secApiSaveBtn').disabled=true;secApiMsg('Saving…','info');
+  const on=$('secApi').checked;
+  secApiMsg('Saving…','info');
   try{
     const r=await fetch('/api/auth',{method:'POST',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(r.ok){secApiMsg('Saved','ok')}
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({api_auth_enabled:on})});
+    if(r.ok)secApiMsg(on?'API key now required':'API key no longer required','ok');
     else secApiMsg('Save failed: '+r.status,'err');
   }catch(e){secApiMsg('Save failed','err')}
-  $('secApiSaveBtn').disabled=false;
 }
 
 async function regenKey(){
