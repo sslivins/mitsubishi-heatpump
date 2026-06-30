@@ -1,0 +1,514 @@
+openapi: 3.0.3
+info:
+  title: Mitsubishi Heat Pump Controller API
+  description: |
+    HTTP API exposed by the on-device web server of the
+    [mitsubishi-heatpump](https://github.com/sslivins/mitsubishi-heatpump)
+    ESP32-S3 firmware. The device bridges a Mitsubishi heat pump to Home
+    Assistant over MQTT and serves a configuration dashboard plus this JSON API.
+
+    ## Authentication
+    When **API access** is enabled in the dashboard (Security tab), every
+    `/api/*` request must carry a valid `X-API-Key` header **or** a logged-in
+    browser session cookie. When API access is disabled, the endpoints are open
+    on the local network. The API key is shown (and can be regenerated) in the
+    dashboard's *API Access* card.
+  version: 0.2.22
+  license:
+    name: See repository
+    url: https://github.com/sslivins/mitsubishi-heatpump
+servers:
+  - url: http://{host}
+    description: The device on your local network
+    variables:
+      host:
+        default: mitsubishi-heatpump.local
+        description: Device mDNS hostname or IP address
+tags:
+  - name: Climate
+    description: Heat-pump state and control
+  - name: Status
+    description: Device health and telemetry
+  - name: Network
+    description: WiFi and MQTT configuration
+  - name: Firmware
+    description: OTA updates
+  - name: System
+    description: Restart, factory reset
+  - name: Auth
+    description: Login, sessions and API-key management
+paths:
+  /api/status:
+    get:
+      tags: [Status]
+      summary: Device health and power telemetry
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Current device status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+  /api/settings:
+    get:
+      tags: [Climate]
+      summary: Current heat-pump settings and live status
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Heat-pump settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Settings' }
+    post:
+      tags: [Climate]
+      summary: Change heat-pump settings
+      description: Only the fields present in the body are applied.
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SettingsUpdate' }
+      responses:
+        '200':
+          description: Accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatusOk' }
+        '400':
+          description: Empty, oversized or invalid JSON body
+  /api/mqtt:
+    get:
+      tags: [Network]
+      summary: Current MQTT broker settings (password masked)
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: MQTT settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MqttSettings' }
+    post:
+      tags: [Network]
+      summary: Save MQTT broker settings, then reboot
+      description: |
+        Omitted fields keep their stored value (notably `password`, which the
+        GET never returns). The device reboots after saving.
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MqttSettingsUpdate' }
+      responses:
+        '200':
+          description: Saved; device rebooting
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SavedRebooting' }
+        '400':
+          description: Missing host or invalid body
+        '500':
+          description: NVS write failed
+  /api/wifi:
+    get:
+      tags: [Network]
+      summary: Current WiFi network (password never returned)
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: WiFi state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WifiSettings' }
+    post:
+      tags: [Network]
+      summary: Set WiFi credentials, then reboot
+      description: Omitting/blanking `password` preserves the stored key.
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WifiUpdate' }
+      responses:
+        '200':
+          description: Saved; device rebooting
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SavedRebooting' }
+        '400':
+          description: Missing ssid or invalid body
+        '500':
+          description: NVS write failed
+  /api/update:
+    get:
+      tags: [Firmware]
+      summary: Cached GitHub release-check result
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Update info
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UpdateInfo' }
+  /api/update/check:
+    post:
+      tags: [Firmware]
+      summary: Trigger an immediate GitHub release poll
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Check started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: checking }
+  /api/update/install:
+    post:
+      tags: [Firmware]
+      summary: Install the latest GitHub release
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Install started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StartedStatus' }
+        '409':
+          description: No update available or OTA busy
+  /api/ota:
+    post:
+      tags: [Firmware]
+      summary: Upload a raw firmware .bin into the inactive slot
+      description: Streams the request body to the OTA partition; reboots on success.
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Flashed; device rebooting
+        '400':
+          description: Upload interrupted
+        '500':
+          description: OTA busy, no partition, write or validation failure
+  /api/ota/url:
+    post:
+      tags: [Firmware]
+      summary: Pull firmware from a URL in the background
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri }
+      responses:
+        '200':
+          description: Download started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StartedStatus' }
+        '400':
+          description: Missing url or invalid body
+        '409':
+          description: OTA already busy
+  /api/ota/status:
+    get:
+      tags: [Firmware]
+      summary: Current OTA progress
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: OTA status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OtaStatus' }
+  /api/system/restart:
+    post:
+      tags: [System]
+      summary: Reboot the device
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Restarting
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: restarting }
+  /api/system/factory_reset:
+    post:
+      tags: [System]
+      summary: Erase WiFi credentials and reboot into provisioning
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Reset
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: reset }
+  /api/login:
+    post:
+      tags: [Auth]
+      summary: Log in and receive a session cookie
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: Logged in; `Set-Cookie` returned
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatusOk' }
+        '400':
+          description: Invalid body
+        '401':
+          description: Invalid credentials
+  /api/logout:
+    post:
+      tags: [Auth]
+      summary: Invalidate the current session
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatusOk' }
+  /api/auth:
+    get:
+      tags: [Auth]
+      summary: Auth configuration and whether this client is authenticated
+      description: The `api_key` field is only included for an authenticated client.
+      responses:
+        '200':
+          description: Auth state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthState' }
+    post:
+      tags: [Auth]
+      summary: Update auth settings (browser-session gated)
+      description: |
+        Requires a valid session when web login is enabled. Only the fields
+        present in the body are applied. Enabling `web_auth_enabled` without a
+        stored or supplied password is rejected.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthUpdate' }
+      responses:
+        '200':
+          description: Updated; new `api_key` returned only when regenerated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthPostResult' }
+        '400':
+          description: Invalid body, or enabling web login with no password
+        '401':
+          description: Not authorized to change auth settings
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: mh_session
+  schemas:
+    StatusOk:
+      type: object
+      properties:
+        status: { type: string, example: ok }
+    StartedStatus:
+      type: object
+      properties:
+        status: { type: string, example: started }
+    SavedRebooting:
+      type: object
+      properties:
+        status: { type: string, example: saved }
+        message: { type: string, example: rebooting }
+    Status:
+      type: object
+      properties:
+        version: { type: string }
+        hostname: { type: string }
+        ip: { type: string }
+        unit_connected: { type: boolean }
+        mqtt_connected: { type: boolean }
+        uptime_s: { type: integer }
+        free_heap: { type: integer }
+        power:
+          type: object
+          properties:
+            present: { type: boolean }
+            vbat_mv: { type: integer }
+            vin_mv: { type: integer }
+            source: { type: string }
+            charging: { type: boolean }
+    Settings:
+      type: object
+      properties:
+        power: { type: string, example: 'ON' }
+        mode: { type: string, example: HEAT }
+        temperature: { type: number }
+        fan: { type: string }
+        vane: { type: string }
+        wideVane: { type: string }
+        connected: { type: boolean }
+        roomTemperature: { type: number }
+        operating: { type: boolean }
+        compressorFrequency: { type: number }
+    SettingsUpdate:
+      type: object
+      properties:
+        power: { type: string, enum: ['ON', 'OFF'] }
+        mode: { type: string, example: HEAT }
+        temperature: { type: number }
+        fan: { type: string }
+        vane: { type: string }
+        wideVane: { type: string }
+        remoteTemp: { type: number, description: External room temperature feed }
+    MqttSettings:
+      type: object
+      properties:
+        host: { type: string }
+        port: { type: integer }
+        username: { type: string }
+        base_topic: { type: string }
+        friendly_name: { type: string }
+        password_set: { type: boolean }
+        connected: { type: boolean }
+    MqttSettingsUpdate:
+      type: object
+      required: [host]
+      properties:
+        host: { type: string }
+        port: { type: integer, default: 1883 }
+        username: { type: string }
+        password: { type: string, format: password }
+        base_topic: { type: string }
+        friendly_name: { type: string }
+    WifiSettings:
+      type: object
+      properties:
+        ssid: { type: string }
+        mode: { type: string, enum: [connected, connecting, provisioning, idle] }
+        connected: { type: boolean }
+        ip: { type: string }
+        ap_name: { type: string }
+        password_set: { type: boolean }
+    WifiUpdate:
+      type: object
+      required: [ssid]
+      properties:
+        ssid: { type: string }
+        password: { type: string, format: password }
+    UpdateInfo:
+      type: object
+      properties:
+        current: { type: string }
+        latest: { type: string }
+        update_available: { type: boolean }
+        checking: { type: boolean }
+        checked: { type: boolean }
+        published_at: { type: string }
+        release_url: { type: string }
+        error: { type: string }
+        last_trigger: { type: string }
+        last_requester: { type: string }
+        last_check_age_s: { type: integer }
+    OtaStatus:
+      type: object
+      properties:
+        state: { type: string, enum: [idle, in_progress, success, failed] }
+        progress: { type: integer }
+        message: { type: string }
+        busy: { type: boolean }
+    AuthState:
+      type: object
+      properties:
+        web_auth_enabled: { type: boolean }
+        api_auth_enabled: { type: boolean }
+        username: { type: string }
+        web_password_set: { type: boolean }
+        authenticated: { type: boolean }
+        api_key:
+          type: string
+          description: Only present when the client is authenticated.
+    AuthUpdate:
+      type: object
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+        web_auth_enabled: { type: boolean }
+        api_auth_enabled: { type: boolean }
+        regenerate_key: { type: boolean }
+    AuthPostResult:
+      type: object
+      properties:
+        status: { type: string, example: ok }
+        web_auth_enabled: { type: boolean }
+        api_auth_enabled: { type: boolean }
+        username: { type: string }
+        api_key:
+          type: string
+          description: Only present when regenerated in this request.

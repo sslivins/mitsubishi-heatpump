@@ -94,6 +94,8 @@ background:#0e1116;color:#e6edf3;border:1px solid #30363d;border-radius:8px;padd
 background:#21262d;color:#e6edf3;font-size:1.2em;line-height:1;cursor:pointer;
 display:flex;align-items:center;justify-content:center}
 .iconbtn:hover{background:#30363d}
+.iconbtn:disabled{opacity:.4;cursor:not-allowed}
+.iconbtn:disabled:hover{background:#21262d}
 </style>
 </head>
 <body>
@@ -300,10 +302,15 @@ display:flex;align-items:center;justify-content:center}
     <label style="font-size:.85em;color:#c9d1d9;display:block;margin:4px 0 6px">API key</label>
     <div class="keyrow">
       <input type="text" id="secKey" readonly placeholder="&#8212;" title="Send this key in the X-API-Key header on /api requests">
-      <button class="iconbtn" onclick="regenKey()" title="Regenerate API key (invalidates the current one)" aria-label="Regenerate API key">&#x21bb;</button>
-      <button class="iconbtn" onclick="copyKey()" title="Copy API key to clipboard" aria-label="Copy API key">&#x29c9;</button>
+      <button class="iconbtn" id="regenBtn" onclick="regenKey()" title="Regenerate API key (invalidates the current one)" aria-label="Regenerate API key">&#x21bb;</button>
+      <button class="iconbtn" id="copyBtn" onclick="copyKey()" title="Copy API key to clipboard" aria-label="Copy API key">&#x29c9;</button>
     </div>
     <div id="secApiMsg" class="status hidden" style="margin:10px 0"></div>
+    <p style="font-size:.8em;color:#8b949e;margin:10px 0 0">
+      <a href="https://petstore.swagger.io/?url=https://raw.githubusercontent.com/sslivins/mitsubishi-heatpump/main/openapi.yaml"
+         target="_blank" rel="noopener" style="color:#58a6ff">View the API reference &#8599;</a>
+      &mdash; interactive OpenAPI docs for every <code>/api</code> endpoint.
+    </p>
   </div>
   </div><!-- /panel-system -->
 </div>
@@ -617,7 +624,7 @@ async function saveWifi(){
 }
 
 // ── Security / auth ────────────────────────────────────────────────────
-let authState={web:false,api:false,authed:false,pwSet:false};
+let authState={web:false,api:false,authed:false,pwSet:false,apiKey:''};
 function lgMsg(m,cls){const el=$('lgMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
 function secWebMsg(m,cls){const el=$('secWebMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
 function secApiMsg(m,cls){const el=$('secApiMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
@@ -660,7 +667,8 @@ async function loadAuth(){
     $('secWeb').checked=a.web_auth_enabled;
     $('secApi').checked=a.api_auth_enabled;
     $('secUser').value=a.username||'';
-    $('secKey').value=a.api_key||'';
+    authState.apiKey=a.api_key||'';
+    updateApiKeyState();
     $('secLogoutBtn').classList.toggle('hidden',!a.web_auth_enabled);
     updateWebSaveState();
     return true;
@@ -708,6 +716,7 @@ async function saveWebLogin(){
 
 async function saveApiAuth(){
   const on=$('secApi').checked;
+  updateApiKeyState();
   secApiMsg('Saving…','info');
   try{
     const r=await fetch('/api/auth',{method:'POST',
@@ -717,13 +726,23 @@ async function saveApiAuth(){
   }catch(e){secApiMsg('Save failed','err')}
 }
 
+// The key is only meaningful when API access is on, so blank the field and
+// disable the regenerate/copy actions while it's off.
+function updateApiKeyState(){
+  const on=$('secApi').checked;
+  $('secKey').value=on?(authState.apiKey||''):'';
+  $('secKey').placeholder=on?'\u2014':'Enable API access to view the key';
+  $('regenBtn').disabled=!on;
+  $('copyBtn').disabled=!on;
+}
+
 async function regenKey(){
   if(!confirm('Generate a new API key? The current key will stop working.'))return;
   try{
     const r=await fetch('/api/auth',{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({regenerate_key:true})});
     const j=await r.json();
-    if(j.api_key){$('secKey').value=j.api_key;secApiMsg('New API key generated','ok')}
+    if(j.api_key){authState.apiKey=j.api_key;$('secKey').value=j.api_key;secApiMsg('New API key generated','ok')}
     else secApiMsg('Failed to regenerate key','err');
   }catch(e){secApiMsg('Request failed','err')}
 }
