@@ -422,13 +422,38 @@ async function pollProgress(msg,barId,seen){
       bar.classList.remove('indet');fill.style.width='100%';
       msg('Update complete — rebooting','ok');
       setTimeout(()=>resetBar(barId),2500);
+      watchReboot(msg);
     }else if(seen.v&&s.state==='failed'){
       resetBar(barId);msg('Update failed: '+(s.message||'unknown error'),'err');
     }else{
       if(!seen.v&&seen.n>25){msg('No update activity detected','err');return}
       setTimeout(()=>pollProgress(msg,barId,seen),1000);
     }
-  }catch(e){bar.classList.remove('indet');fill.style.width='100%';msg('Device rebooting…','ok');setTimeout(()=>resetBar(barId),2500)}
+  }catch(e){
+    bar.classList.remove('indet');fill.style.width='100%';
+    msg('Rebooting into new firmware…','ok');setTimeout(()=>resetBar(barId),2500);
+    // Only treat a dropped connection as a reboot once an update was underway,
+    // so a transient blip mid-download doesn't end progress tracking early.
+    if(seen.v)watchReboot(msg); else setTimeout(()=>pollProgress(msg,barId,seen),1500);
+  }
+}
+
+// After a successful flash the device reboots; poll quickly until it answers
+// again (instead of waiting for the 30s refresh) and then sync the cards.
+async function watchReboot(msg){
+  if(watchReboot._iv)return;  // one watcher at a time
+  msg('Rebooting into new firmware…','info');
+  let tries=0;
+  watchReboot._iv=setInterval(async()=>{
+    if(++tries>40){clearInterval(watchReboot._iv);watchReboot._iv=null;
+      msg('Device is taking longer than expected to come back','info');return}
+    try{
+      const s=await (await fetch('/api/status',{cache:'no-store'})).json();
+      clearInterval(watchReboot._iv);watchReboot._iv=null;
+      msg('Back online — now on v'+s.version,'ok');
+      await refreshUpdate();refresh();loadMqtt();loadWifi();
+    }catch(e){/* still rebooting */}
+  },2000);
 }
 
 // ── GitHub software update ─────────────────────────────────────────────
