@@ -456,6 +456,10 @@ void check_now(const char* source) {
     {
         std::lock_guard<std::mutex> lk(s_upd_mtx);
         s_pending_source = source ? source : "";
+        // Mark "checking" synchronously so a GET /api/update issued right after
+        // this POST returns reflects the in-progress check instead of the stale
+        // previous result (which made the UI briefly flash the old verdict).
+        s_upd.checking = true;
     }
     if (s_checker) xTaskNotifyGive(s_checker);
 }

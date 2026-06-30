@@ -305,7 +305,6 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
       <div class="stat"><div class="k">Latest (GitHub)</div><div class="v" id="updLatest">--</div></div>
     </div>
     <div id="updMsg" class="status hidden" style="margin:10px 0"></div>
-    <div id="updDiag" class="op" style="font-size:.72em;margin-bottom:8px"></div>
     <div class="pbar" id="updBar"><i></i></div>
     <button class="btn" id="updCheckBtn" onclick="checkUpdate()">Check for updates</button>
     <button class="btn btn-warn hidden" id="updInstallBtn" onclick="installUpdate()">Install update</button>
@@ -661,14 +660,13 @@ async function refreshUpdate(){
     $('updLatest').textContent=u.checked?(u.latest||'--'):(u.checking?'checking…':'—');
     $('updCheckBtn').disabled=u.checking;
     $('updCheckBtn').textContent=u.checking?'Checking…':'Check for updates';
-    const d=$('updDiag');
-    if(u.last_trigger){
-      let age=u.last_check_age_s;
-      let ago=age<0?'never':age<90?age+'s ago':age<5400?Math.round(age/60)+'m ago':Math.round(age/3600)+'h ago';
-      let line='last check: '+u.last_trigger+' · '+ago;
-      if(u.last_requester) line+=' · by '+u.last_requester;
-      d.textContent=line;
-    }else d.textContent='';
+    // While a check is in flight, keep showing "Checking…" and don't render a
+    // verdict yet — otherwise the stale previous result flashes ("Up to date")
+    // before the fresh one ("Update available") lands.
+    if(u.checking){
+      updMsg('Checking GitHub…','info');
+      return;
+    }
     const inst=$('updInstallBtn');
     if(u.update_available){
       inst.classList.remove('hidden');
