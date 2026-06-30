@@ -10,11 +10,20 @@
 
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "mbedtls/sha256.h"
 
 static const char* TAG = "auth_mgr";
+
+// Monotonic seconds since boot. Session lifetimes MUST use this rather than
+// time(NULL): the wall clock jumps forward when SNTP syncs (typically a few
+// seconds after an OTA reboot), which would otherwise instantly "expire" every
+// session created before the sync and log the user straight back out.
+static time_t monotonic_now(void) {
+    return (time_t)(esp_timer_get_time() / 1000000);
+}
 
 // NVS namespace and keys
 static const char* NVS_NAMESPACE = "auth";
@@ -154,7 +163,7 @@ static session_t* find_free_session(void) {
 
 static bool is_session_expired(const session_t* session) {
     if (session == NULL || !session->active) return true;
-    return (time(NULL) - session->created_at) > AUTH_SESSION_LIFETIME_SEC;
+    return (monotonic_now() - session->created_at) > AUTH_SESSION_LIFETIME_SEC;
 }
 
 // ── Public API ───────────────────────────────────────────────────────────
@@ -163,7 +172,7 @@ void auth_mgr_init(void) {
     if (state.initialized) return;
 
     memset(&state, 0, sizeof(state));
-    bool loaded = load_from_nvs();
+    load_from_nvs();
 
     // The admin username is fixed to "admin" and cannot be changed.
     if (strcmp(state.username, "admin") != 0) {
@@ -264,7 +273,7 @@ auth_role_t auth_mgr_login(const char* password, char* session_token) {
     session->active = true;
     session->role = role;
     generate_random_hex(session->token, AUTH_SESSION_TOKEN_LEN);
-    session->created_at = time(NULL);
+    session->created_at = monotonic_now();
     session->last_used = session->created_at;
     if (session_token != NULL) strcpy(session_token, session->token);
 
@@ -280,7 +289,7 @@ auth_role_t auth_mgr_session_role(const char* token) {
         session->active = false;
         return AUTH_ROLE_NONE;
     }
-    session->last_used = time(NULL);
+    session->last_used = monotonic_now();
     return session->role;
 }
 
