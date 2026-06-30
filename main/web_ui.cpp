@@ -84,18 +84,18 @@ bool get_api_key(httpd_req_t* req, char* out, size_t out_len) {
     return httpd_req_get_hdr_value_str(req, "X-API-Key", out, out_len) == ESP_OK;
 }
 
-// Authorize a data/control request: open when both auth modes are off; else a
-// valid session cookie OR (when API auth is on) a valid X-API-Key.
+// Authorize a data/control request. Web login is the gate for human/browser
+// access to the UI and the data endpoints it calls; when it's disabled the UI
+// is open, so these endpoints are too — regardless of the API-key setting,
+// which can't distinguish a browser from a script on these shared routes.
+// (Mirrors admin_authorized's "no web login → full access".) When web login is
+// on, accept a valid session cookie OR, if API auth is on, a valid X-API-Key.
 bool api_authorized(httpd_req_t* req) {
-    bool web_on = auth_mgr_web_auth_enabled();
-    bool api_on = auth_mgr_api_auth_enabled();
-    if (!web_on && !api_on) return true;
-    if (web_on) {
-        char tok[AUTH_SESSION_TOKEN_LEN + 1];
-        if (get_cookie_token(req, tok, sizeof(tok)) && auth_mgr_validate_session(tok))
-            return true;
-    }
-    if (api_on) {
+    if (!auth_mgr_web_auth_enabled()) return true;
+    char tok[AUTH_SESSION_TOKEN_LEN + 1];
+    if (get_cookie_token(req, tok, sizeof(tok)) && auth_mgr_validate_session(tok))
+        return true;
+    if (auth_mgr_api_auth_enabled()) {
         char key[AUTH_API_KEY_LEN + 1];
         if (get_api_key(req, key, sizeof(key)) && auth_mgr_validate_api_key(key))
             return true;
