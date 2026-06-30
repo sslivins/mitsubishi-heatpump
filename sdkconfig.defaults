@@ -39,3 +39,8 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_FREERTOS_HZ=1000
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+
+# HTTP server — browsers send large header sets (User-Agent + sec-ch-* +
+# Origin + Referer + cookies). The 512-byte default rejects the login POST
+# with "Header fields are too long". 2KB gives ample headroom.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=2048
