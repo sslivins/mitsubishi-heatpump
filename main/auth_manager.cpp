@@ -104,6 +104,8 @@ static bool save_to_nvs(void) {
         nvs_set_str(nvs, NVS_KEY_USERNAME, state.username);
     if (state.password_set)
         nvs_set_blob(nvs, NVS_KEY_PASS_HASH, state.password_hash, sizeof(state.password_hash));
+    else
+        nvs_erase_key(nvs, NVS_KEY_PASS_HASH);  // no-op if absent
     if (state.api_key[0] != '\0')
         nvs_set_str(nvs, NVS_KEY_API_KEY, state.api_key);
 
@@ -151,14 +153,28 @@ void auth_mgr_init(void) {
     memset(&state, 0, sizeof(state));
     bool loaded = load_from_nvs();
 
-    // Seed default credentials only when none exist, so enabling web auth works
-    // out of the box. Web auth itself defaults OFF, so this is not a lockout.
-    if (!loaded || (!state.password_set && state.username[0] == '\0')) {
+    // Default username for convenience, but intentionally NO default password:
+    // a fresh device has web auth OFF and no password, and the web handler
+    // refuses to enable web auth until the user sets one.
+    if (state.username[0] == '\0') {
         strncpy(state.username, "admin", sizeof(state.username) - 1);
         state.username[sizeof(state.username) - 1] = '\0';
-        hash_password("admin", state.password_hash);
-        state.password_set = true;
         save_to_nvs();
+    }
+
+    // Migration: older firmware auto-seeded admin/admin. If a device still
+    // carries that exact default, clear it so there is no default password.
+    // A user-chosen password (anything but "admin") is left untouched.
+    if (state.password_set && strcmp(state.username, "admin") == 0) {
+        uint8_t admin_hash[32];
+        hash_password("admin", admin_hash);
+        if (memcmp(state.password_hash, admin_hash, sizeof(admin_hash)) == 0) {
+            state.password_set = false;
+            memset(state.password_hash, 0, sizeof(state.password_hash));
+            state.web_auth_enabled = false;  // can't require login with no password
+            save_to_nvs();
+            ESP_LOGI(TAG, "cleared legacy default admin password");
+        }
     }
 
     if (state.api_key[0] == '\0') {
@@ -204,6 +220,8 @@ bool auth_mgr_set_credentials(const char* username, const char* password) {
 }
 
 const char* auth_mgr_get_username(void) { return state.username; }
+
+bool auth_mgr_web_password_set(void) { return state.password_set; }
 
 bool auth_mgr_login(const char* username, const char* password, char* session_token) {
     if (!state.web_auth_enabled) return true;  // auth disabled → always ok

@@ -43,6 +43,10 @@ bool auth_mgr_set_credentials(const char* username, const char* password);
 
 const char* auth_mgr_get_username(void);
 
+/// Whether a web-UI password is currently set. Web auth must not be enabled
+/// while this is false (there would be no way to log in).
+bool auth_mgr_web_password_set(void);
+
 /// Validate username/password and, on success, create a session. The token is
 /// written to @p session_token (buffer must be AUTH_SESSION_TOKEN_LEN+1).
 bool auth_mgr_login(const char* username, const char* password, char* session_token);
