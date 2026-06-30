@@ -401,10 +401,15 @@ void perform_check() {
 
 void checker_task(void*) {
     vTaskDelay(pdMS_TO_TICKS(10000));  // let WiFi/SNTP/TLS time settle
+    ESP_LOGI(TAG, "update check trigger: boot");
+    perform_check();
     for (;;) {
-        perform_check();
         // Sleep until the interval elapses, or wake early when check_now() fires.
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(s_interval_ms));
+        // A non-zero return means we were notified (on-demand); zero is the timer.
+        uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(s_interval_ms));
+        ESP_LOGI(TAG, "update check trigger: %s",
+                 notified ? "on-demand (check_now)" : "interval timer");
+        perform_check();
     }
 }
 

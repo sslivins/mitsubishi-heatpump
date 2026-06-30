@@ -14,6 +14,8 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "cJSON.h"
+#include "lwip/sockets.h"
+#include "lwip/inet.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -407,9 +409,28 @@ esp_err_t handle_update_get(httpd_req_t* req) {
 }
 
 // ── POST /api/update/check — trigger an immediate GitHub poll ──────────
+// Log who asked, so an unexpected check (not the dashboard button) can be
+// traced to a client IP / User-Agent.
+void log_requester(httpd_req_t* req, const char* what) {
+    char ip[48] = "unknown";
+    int fd = httpd_req_to_sockfd(req);
+    if (fd >= 0) {
+        struct sockaddr_in6 a;
+        socklen_t l = sizeof(a);
+        if (getpeername(fd, (struct sockaddr*)&a, &l) == 0)
+            inet_ntop(AF_INET6, &a.sin6_addr, ip, sizeof(ip));
+    }
+    char ua[96] = "";
+    size_t ualen = httpd_req_get_hdr_value_len(req, "User-Agent");
+    if (ualen > 0 && ualen < sizeof(ua))
+        httpd_req_get_hdr_value_str(req, "User-Agent", ua, sizeof(ua));
+    ESP_LOGI(TAG, "%s from %s ua=\"%s\"", what, ip, ua);
+}
+
 esp_err_t handle_update_check(httpd_req_t* req) {
     set_cors(req);
     REQUIRE_API_AUTH(req);
+    log_requester(req, "/api/update/check");
     ota::check_now();
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"status\":\"checking\"}");
@@ -419,6 +440,7 @@ esp_err_t handle_update_check(httpd_req_t* req) {
 esp_err_t handle_update_install(httpd_req_t* req) {
     set_cors(req);
     REQUIRE_API_AUTH(req);
+    log_requester(req, "/api/update/install");
     esp_err_t err = ota::install_latest();
     httpd_resp_set_type(req, "application/json");
     if (err != ESP_OK) {
