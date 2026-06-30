@@ -43,6 +43,8 @@ struct UpdateInfo {
     bool        checking         = false;  ///< a check is currently in flight
     bool        checked          = false;  ///< at least one check has completed
     int64_t     last_checked_ms  = 0;      ///< esp_timer ms at last completed check (0 = never)
+    std::string last_trigger;              ///< what kicked off the last check: boot/on-demand/interval
+    std::string last_requester;            ///< for on-demand checks: client IP + User-Agent
     std::string error;                     ///< last check error (empty when ok)
 };
 
@@ -70,7 +72,9 @@ esp_err_t start_url(const std::string& url);
 void start_update_checker(uint32_t interval_seconds = 6 * 3600);
 
 /// Trigger an immediate check (non-blocking). No-op if the checker isn't running.
-void check_now();
+/// @p source describes the caller (e.g. an HTTP client's IP/User-Agent) and is
+/// surfaced in UpdateInfo.last_requester to help trace unexpected checks.
+void check_now(const char* source = "");
 
 /// Snapshot of the most recent GitHub release check.
 UpdateInfo get_update_info();

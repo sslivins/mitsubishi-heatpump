@@ -400,6 +400,12 @@ esp_err_t handle_update_get(httpd_req_t* req) {
     cJSON_AddStringToObject(root, "published_at", u.published_at.c_str());
     cJSON_AddStringToObject(root, "release_url", u.release_url.c_str());
     cJSON_AddStringToObject(root, "error", u.error.c_str());
+    cJSON_AddStringToObject(root, "last_trigger", u.last_trigger.c_str());
+    cJSON_AddStringToObject(root, "last_requester", u.last_requester.c_str());
+    int64_t age_s = u.last_checked_ms > 0
+                        ? (esp_timer_get_time() / 1000 - u.last_checked_ms) / 1000
+                        : -1;
+    cJSON_AddNumberToObject(root, "last_check_age_s", (double)age_s);
     char* str = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, str);
@@ -409,9 +415,9 @@ esp_err_t handle_update_get(httpd_req_t* req) {
 }
 
 // ── POST /api/update/check — trigger an immediate GitHub poll ──────────
-// Log who asked, so an unexpected check (not the dashboard button) can be
-// traced to a client IP / User-Agent.
-void log_requester(httpd_req_t* req, const char* what) {
+// Build an "IP ua=..." string for the calling client so an unexpected check
+// (not the dashboard button) can be traced to its source.
+std::string requester_str(httpd_req_t* req) {
     char ip[48] = "unknown";
     int fd = httpd_req_to_sockfd(req);
     if (fd >= 0) {
@@ -424,14 +430,17 @@ void log_requester(httpd_req_t* req, const char* what) {
     size_t ualen = httpd_req_get_hdr_value_len(req, "User-Agent");
     if (ualen > 0 && ualen < sizeof(ua))
         httpd_req_get_hdr_value_str(req, "User-Agent", ua, sizeof(ua));
-    ESP_LOGI(TAG, "%s from %s ua=\"%s\"", what, ip, ua);
+    char buf[160];
+    snprintf(buf, sizeof(buf), "%s ua=\"%s\"", ip, ua);
+    return buf;
 }
 
 esp_err_t handle_update_check(httpd_req_t* req) {
     set_cors(req);
     REQUIRE_API_AUTH(req);
-    log_requester(req, "/api/update/check");
-    ota::check_now();
+    std::string who = requester_str(req);
+    ESP_LOGI(TAG, "/api/update/check from %s", who.c_str());
+    ota::check_now(who.c_str());
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"status\":\"checking\"}");
 }
@@ -440,7 +449,7 @@ esp_err_t handle_update_check(httpd_req_t* req) {
 esp_err_t handle_update_install(httpd_req_t* req) {
     set_cors(req);
     REQUIRE_API_AUTH(req);
-    log_requester(req, "/api/update/install");
+    ESP_LOGI(TAG, "/api/update/install from %s", requester_str(req).c_str());
     esp_err_t err = ota::install_latest();
     httpd_resp_set_type(req, "application/json");
     if (err != ESP_OK) {
