@@ -260,7 +260,7 @@ display:flex;align-items:center;justify-content:center;gap:5px}
     <div class="mqf"><label>Network (SSID)</label>
       <input type="text" id="wfSsid" autocomplete="off" placeholder="SSID"></div>
     <div class="mqf"><label>Password</label>
-      <input type="password" id="wfPass" autocomplete="new-password" placeholder="(unchanged)"></div>
+      <input type="password" id="wfPass" autocomplete="new-password" placeholder=""></div>
     <div id="wfMsg" class="status hidden" style="margin:10px 0"></div>
     <button class="btn btn-warn" id="wfSaveBtn" onclick="saveWifi()">Save &amp; reconnect</button>
     <button class="btn btn-danger" onclick="sysPost('/api/system/factory_reset','Erase WiFi credentials and reboot into setup mode?')">Forget WiFi &amp; reset</button>
@@ -279,7 +279,7 @@ display:flex;align-items:center;justify-content:center;gap:5px}
     <div class="mqf"><label>Username</label>
       <input type="text" id="mqUser" autocomplete="off" placeholder="(optional)"></div>
     <div class="mqf"><label>Password</label>
-      <input type="password" id="mqPass" autocomplete="new-password" placeholder="(unchanged)"></div>
+      <input type="password" id="mqPass" autocomplete="new-password" placeholder=""></div>
     <div class="mqf"><label>Base topic</label>
       <input type="text" id="mqBase" placeholder="mitsubishi2mqtt"></div>
     <div class="mqf"><label>Friendly name</label>
@@ -325,7 +325,7 @@ display:flex;align-items:center;justify-content:center;gap:5px}
     </div>
     <div class="sub" style="margin:0 0 8px">Admin password (username is always <code>admin</code>).</div>
     <div class="mqf"><label>Admin password</label>
-      <input type="password" id="secPass" autocomplete="new-password" placeholder="(unchanged)" oninput="updateWebSaveState()"></div>
+      <input type="password" id="secPass" autocomplete="new-password" placeholder="" oninput="updateWebSaveState()"></div>
     <div id="secWebHint" class="sub" style="margin:4px 0 0">No password set yet.</div>
     <div id="secWebMsg" class="status hidden" style="margin:10px 0"></div>
     <button class="btn btn-warn" id="secWebSaveBtn" onclick="saveWebLogin()">Save web login</button>
@@ -336,7 +336,7 @@ display:flex;align-items:center;justify-content:center;gap:5px}
     <div class="sub" style="margin:0 0 8px">An optional shared password (username <code>user</code>) that can
       view and control climate but cannot change any settings.</div>
     <div class="mqf"><label>User password</label>
-      <input type="password" id="secUserPass" autocomplete="new-password" placeholder="(unchanged)" oninput="updateUserSaveState()"></div>
+      <input type="password" id="secUserPass" autocomplete="new-password" placeholder="" oninput="updateUserSaveState()"></div>
     <div id="secUserHint" class="sub" style="margin:4px 0 0">No user password set.</div>
     <div id="secUserMsg" class="status hidden" style="margin:10px 0"></div>
     <button class="btn btn-warn" id="secUserSaveBtn" onclick="saveUserLogin()">Save user password</button>
@@ -695,7 +695,7 @@ async function loadMqtt(){
     $('mqUser').value=m.username||'';
     $('mqBase').value=m.base_topic||'';
     $('mqFriendly').value=m.friendly_name||'';
-    $('mqPass').placeholder=m.password_set?'(unchanged)':'(none)';
+    $('mqPass').placeholder=m.password_set?'••••••••':'None set';
     $('mqttStat').textContent=m.connected?'connected':'disconnected';
     $('mqttNode').textContent=m.friendly_name||'heatpump-<id>';
   }catch(e){}
@@ -730,7 +730,7 @@ async function loadWifi(){
     const w=await (await jget('/api/wifi')).json();
     $('wifiSsid').textContent=w.ssid||'(not set)';
     $('wifiStat').textContent=w.mode||'--';
-    $('wfPass').placeholder=w.password_set?'(unchanged)':'(none)';
+    $('wfPass').placeholder=w.password_set?'••••••••':'None set';
     if(document.activeElement!==$('wfSsid')) $('wfSsid').value=w.ssid||'';
   }catch(e){}
 }
@@ -774,8 +774,8 @@ function updateWebSaveState(){
     hint.textContent='Password will be updated on save.';
     $('secPass').placeholder='New password';
   }else{
-    hint.textContent=authState.pwSet?'A password is set.':'No password set yet.';
-    $('secPass').placeholder=authState.pwSet?'(unchanged)':'Set a password';
+    hint.textContent=authState.pwSet?'A password is set — leave blank to keep it.':'No password set yet.';
+    $('secPass').placeholder=authState.pwSet?'••••••••':'Set a password';
   }
 }
 
@@ -785,8 +785,8 @@ function updateUserSaveState(){
   $('secUserSaveBtn').disabled=!has;
   $('secUserRemoveBtn').classList.toggle('hidden',!authState.userSet);
   const hint=$('secUserHint');
-  hint.textContent=authState.userSet?'A user password is set.':'No user password set.';
-  $('secUserPass').placeholder=authState.userSet?'(unchanged)':'Set a password';
+  hint.textContent=authState.userSet?'A user password is set — leave blank to keep it.':'No user password set.';
+  $('secUserPass').placeholder=authState.userSet?'••••••••':'Set a password';
 }
 
 // Hide admin-only tabs when the signed-in account is the climate-only user.
