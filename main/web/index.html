@@ -139,6 +139,7 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
 .pill.limited{color:#58a6ff;border-color:#1a3a5a;background:#0d1a2a}
 .role-desc{font-size:.78em;color:#8b949e;margin-bottom:10px}
 .hint{font-size:.78em;color:#8b949e;margin:4px 0 0}
+.dimmed{opacity:.4;pointer-events:none;transition:opacity .15s}
 </style>
 </head>
 <body>
@@ -332,6 +333,7 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
       <label>Require login to open the web UI</label>
       <div class="toggle"><input type="checkbox" id="secWeb" onchange="updateWebAccessState()"><span class="slider" onclick="document.getElementById('secWeb').click()"></span></div>
     </div>
+    <div id="secWebBody">
     <div class="sub" style="margin:-4px 0 16px">Set a password for each access level below. Anyone with that password gets that level — there is no separate username.</div>
 
     <div class="role first">
@@ -350,6 +352,7 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
       <div id="secUserHint" class="hint">No climate-only password set.</div>
       <button class="btn btn-danger hidden" id="secUserRemoveBtn" onclick="removeUserLogin()">Remove climate-only access</button>
     </div>
+    </div>
 
     <div id="secWebMsg" class="status hidden" style="margin:14px 0 0"></div>
     <button class="btn btn-warn" id="secWebSaveBtn" onclick="saveWebAccess()">Save web access</button>
@@ -361,11 +364,13 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
       <label>Require API key for /api</label>
       <div class="toggle"><input type="checkbox" id="secApi" onchange="saveApiAuth()"><span class="slider" onclick="document.getElementById('secApi').click()"></span></div>
     </div>
+    <div id="secApiBody">
     <label style="font-size:.85em;color:#c9d1d9;display:block;margin:4px 0 6px">API key</label>
     <div class="keyrow">
       <input type="text" id="secKey" readonly placeholder="&#8212;" title="Send this key in the X-API-Key header on /api requests">
       <button class="iconbtn" id="regenBtn" onclick="regenKey()" title="Regenerate API key (invalidates the current one)" aria-label="Regenerate API key">&#x21bb;</button>
       <button class="iconbtn" id="copyBtn" onclick="copyKey()" title="Copy API key to clipboard" aria-label="Copy API key">&#x29c9;</button>
+    </div>
     </div>
     <div id="secApiMsg" class="status hidden" style="margin:10px 0"></div>
     <p style="font-size:.8em;color:#8b949e;margin:10px 0 0">
@@ -793,6 +798,8 @@ function updateWebAccessState(){
     $('secUserPass').placeholder='Optional';
   }
   $('secUserRemoveBtn').classList.toggle('hidden',!authState.userSet);
+  // Grey out the password setup blocks when web login is disabled — they don't apply.
+  $('secWebBody').classList.toggle('dimmed',!enabling);
   // Block only the lockout case: requiring login with no admin password at all.
   const adminAvail=authState.pwSet||adminTyped;
   $('secWebSaveBtn').disabled=enabling&&!adminAvail;
@@ -908,6 +915,7 @@ function updateApiKeyState(){
   $('secKey').placeholder=on?'\u2014':'Enable API access to view the key';
   $('regenBtn').disabled=!on;
   $('copyBtn').disabled=!on;
+  $('secApiBody').classList.toggle('dimmed',!on);
 }
 
 async function regenKey(){
