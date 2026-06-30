@@ -75,9 +75,9 @@ border-radius:8px;padding:8px 10px;margin-bottom:14px}
 .status.err{background:#2a0d0d;color:#f85149}
 .dim{opacity:.5;pointer-events:none}
 .hidden{display:none!important}
-.tabs{display:flex;gap:4px;margin-bottom:14px;background:#161b22;border:1px solid #21262d;
+.tabs{display:flex;gap:3px;margin-bottom:14px;background:#161b22;border:1px solid #21262d;
 border-radius:10px;padding:4px}
-.tab{flex:1;text-align:center;padding:9px 4px;font-size:.82em;color:#8b949e;border-radius:7px;
+.tab{flex:1;min-width:0;text-align:center;padding:9px 3px;font-size:.76em;white-space:nowrap;color:#8b949e;border-radius:7px;
 cursor:pointer;user-select:none;transition:.15s}
 .tab:hover{color:#e6edf3}
 .tab.active{background:#e60012;color:#fff}
@@ -120,6 +120,8 @@ justify-content:center;padding:16px;z-index:100}
   <div class="tabs">
     <div class="tab active" data-tab="climate" onclick="showTab('climate')">Climate</div>
     <div class="tab" data-tab="power" onclick="showTab('power')">Power</div>
+    <div class="tab" data-tab="network" onclick="showTab('network')">Network</div>
+    <div class="tab" data-tab="security" onclick="showTab('security')">Security</div>
     <div class="tab" data-tab="system" onclick="showTab('system')">System</div>
   </div>
 
@@ -191,7 +193,7 @@ justify-content:center;padding:16px;z-index:100}
   </div><!-- /panel-power -->
 
   <div class="panel" id="panel-system">
-  <div class="card">
+  <div class="card" data-grp="system">
     <h2>System</h2>
     <div class="grid">
       <div class="stat"><div class="k">Firmware</div><div class="v" id="ver">--</div></div>
@@ -202,7 +204,7 @@ justify-content:center;padding:16px;z-index:100}
     <button class="btn btn-warn" onclick="sysPost('/api/system/restart','Restart device?')">Restart</button>
   </div>
 
-  <div class="card">
+  <div class="card" data-grp="network">
     <h2>WiFi</h2>
     <div class="grid">
       <div class="stat"><div class="k">Network</div><div class="v" id="wifiSsid">--</div></div>
@@ -217,7 +219,7 @@ justify-content:center;padding:16px;z-index:100}
     <button class="btn btn-danger" onclick="sysPost('/api/system/factory_reset','Erase WiFi credentials and reboot into setup mode?')">Forget WiFi &amp; reset</button>
   </div>
 
-  <div class="card">
+  <div class="card" data-grp="network">
     <h2>MQTT / Home Assistant</h2>
     <div class="grid">
       <div class="stat"><div class="k">Status</div><div class="v" id="mqttStat">--</div></div>
@@ -239,7 +241,7 @@ justify-content:center;padding:16px;z-index:100}
     <button class="btn btn-warn" id="mqSaveBtn" onclick="saveMqtt()">Save &amp; reboot</button>
   </div>
 
-  <div class="card">
+  <div class="card" data-grp="system">
     <h2>Firmware</h2>
     <div class="grid">
       <div class="stat"><div class="k">Installed</div><div class="v" id="updCur">--</div></div>
@@ -268,7 +270,7 @@ justify-content:center;padding:16px;z-index:100}
     </details>
   </div>
 
-  <div class="card">
+  <div class="card" data-grp="security">
     <h2>Web Login</h2>
     <div class="row">
       <label>Require login for web UI</label>
@@ -284,7 +286,7 @@ justify-content:center;padding:16px;z-index:100}
     <button class="btn btn-danger hidden" id="secLogoutBtn" onclick="doLogout()">Sign out</button>
   </div>
 
-  <div class="card">
+  <div class="card" data-grp="security">
     <h2>API Access</h2>
     <div class="row">
       <label>Require API key for /api</label>
@@ -327,8 +329,20 @@ async function jget(url,opts){
 }
 
 function showTab(name){
+  // Climate and Power are their own panels. Network, Security and System all
+  // live inside #panel-system and are shown by filtering cards on data-grp,
+  // so the System tab stays uncluttered without separate panel containers.
+  const sysGroups=['system','network','security'];
+  const inSys=sysGroups.includes(name);
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
-  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id==='panel-'+name));
+  $('panel-climate').classList.toggle('active',name==='climate');
+  $('panel-power').classList.toggle('active',name==='power');
+  $('panel-system').classList.toggle('active',inSys);
+  if(inSys){
+    document.querySelectorAll('#panel-system [data-grp]').forEach(c=>{
+      c.style.display=(c.dataset.grp===name)?'':'none';
+    });
+  }
 }
 
 function badge(el,on){el.className='badge '+(on?'on':'off')}
