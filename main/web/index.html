@@ -377,13 +377,14 @@ async function pollProgress(msg,barId,seen){
     }else if(seen.v&&s.state==='success'){
       bar.classList.remove('indet');fill.style.width='100%';
       msg('Update complete — rebooting','ok');
+      setTimeout(()=>resetBar(barId),2500);
     }else if(seen.v&&s.state==='failed'){
       resetBar(barId);msg('Update failed: '+(s.message||'unknown error'),'err');
     }else{
       if(!seen.v&&seen.n>25){msg('No update activity detected','err');return}
       setTimeout(()=>pollProgress(msg,barId,seen),1000);
     }
-  }catch(e){bar.classList.remove('indet');fill.style.width='100%';msg('Device rebooting…','ok')}
+  }catch(e){bar.classList.remove('indet');fill.style.width='100%';msg('Device rebooting…','ok');setTimeout(()=>resetBar(barId),2500)}
 }
 
 // ── GitHub software update ─────────────────────────────────────────────

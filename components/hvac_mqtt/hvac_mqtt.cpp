@@ -206,9 +206,10 @@ esp_err_t publish_update_discovery() {
     cJSON_AddStringToObject(root, "command_topic", command_topic.c_str());
     cJSON_AddStringToObject(root, "payload_install", "install");
     cJSON_AddStringToObject(root, "device_class", "firmware");
-    // state_topic carries JSON; let HA pull installed/latest straight from it.
-    cJSON_AddStringToObject(root, "value_template", "{{ value_json.installed_version }}");
-    cJSON_AddStringToObject(root, "latest_version_template", "{{ value_json.latest_version }}");
+    // The state_topic carries JSON with installed_version/latest_version keys,
+    // which HA's update platform parses natively. Adding value_template/
+    // latest_version_template here instead left the entity stuck on "unknown",
+    // so we rely on native JSON parsing.
     cJSON_AddStringToObject(root, "availability_topic", avail_topic.c_str());
     cJSON_AddStringToObject(root, "payload_available", "online");
     cJSON_AddStringToObject(root, "payload_not_available", "offline");
