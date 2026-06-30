@@ -60,6 +60,11 @@ background:#fff;border-radius:50%;transition:.2s}
 .btn{cursor:pointer;border:none;border-radius:8px;padding:9px 14px;font-size:.88em;width:100%}
 .btn-warn{background:#21262d;color:#f0883e;border:1px solid #30363d;margin-top:8px}
 .btn-warn:hover{background:#30363d}
+.adv{margin-top:14px;border-top:1px solid #21262d;padding-top:8px}
+.adv>summary{cursor:pointer;font-size:.78em;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;list-style:none;user-select:none}
+.adv>summary::-webkit-details-marker{display:none}
+.adv>summary::before{content:"\25B8  ";color:#8b949e}
+.adv[open]>summary::before{content:"\25BE  "}
 .btn-danger{background:#21262d;color:#f85149;border:1px solid #30363d;margin-top:8px}
 .btn-danger:hover{background:#30363d}
 .note{font-size:.75em;color:#f0883e;background:#2a1a0d;border:1px solid #5a3a1a;
@@ -215,7 +220,7 @@ cursor:pointer;user-select:none;transition:.15s}
   </div>
 
   <div class="card">
-    <h2>Software update</h2>
+    <h2>Firmware</h2>
     <div class="grid">
       <div class="stat"><div class="k">Installed</div><div class="v" id="updCur">--</div></div>
       <div class="stat"><div class="k">Latest (GitHub)</div><div class="v" id="updLatest">--</div></div>
@@ -224,23 +229,22 @@ cursor:pointer;user-select:none;transition:.15s}
     <div class="pbar" id="updBar"><i></i></div>
     <button class="btn" id="updCheckBtn" onclick="checkUpdate()">Check for updates</button>
     <button class="btn btn-warn hidden" id="updInstallBtn" onclick="installUpdate()">Install update</button>
-  </div>
-
-  <div class="card">
-    <h2>Firmware update</h2>
-    <div class="row">
-      <label>Upload .bin</label>
-      <input type="file" id="fwfile" accept=".bin" style="font-size:.8em;max-width:200px">
-    </div>
-    <button class="btn btn-warn" id="upBtn" onclick="uploadFw()">Upload &amp; flash</button>
-    <div class="row" style="margin-top:14px">
-      <label>From URL</label>
-    </div>
-    <input type="text" id="fwurl" placeholder="https://…/mitsubishi-heatpump.bin"
-      style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid #30363d;background:#0e1116;color:#e6edf3;font-size:.85em">
-    <button class="btn btn-warn" onclick="urlFw()">Pull &amp; flash</button>
-    <div id="otaState" class="status hidden" style="margin-top:12px"></div>
-    <div class="pbar" id="otaBar"><i></i></div>
+    <details class="adv">
+      <summary>Advanced — manual flash</summary>
+      <div class="row" style="margin-top:12px">
+        <label>Upload .bin</label>
+        <input type="file" id="fwfile" accept=".bin" style="font-size:.8em;max-width:200px">
+      </div>
+      <button class="btn btn-warn" id="upBtn" onclick="uploadFw()">Upload &amp; flash</button>
+      <div class="row" style="margin-top:14px">
+        <label>From URL</label>
+      </div>
+      <input type="text" id="fwurl" placeholder="https://…/mitsubishi-heatpump.bin"
+        style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid #30363d;background:#0e1116;color:#e6edf3;font-size:.85em">
+      <button class="btn btn-warn" onclick="urlFw()">Pull &amp; flash</button>
+      <div id="otaState" class="status hidden" style="margin-top:12px"></div>
+      <div class="pbar" id="otaBar"><i></i></div>
+    </details>
   </div>
   </div><!-- /panel-system -->
 </div>
