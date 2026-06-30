@@ -22,11 +22,13 @@ static const char* NVS_KEY_WEB_ENABLED = "web_en";
 static const char* NVS_KEY_API_ENABLED = "api_en";
 static const char* NVS_KEY_USERNAME = "username";
 static const char* NVS_KEY_PASS_HASH = "pass_hash";
+static const char* NVS_KEY_USER_HASH = "user_hash";
 static const char* NVS_KEY_API_KEY = "api_key";
 
 typedef struct {
     bool active;
     char token[AUTH_SESSION_TOKEN_LEN + 1];
+    auth_role_t role;
     time_t created_at;
     time_t last_used;
 } session_t;
@@ -36,8 +38,10 @@ static struct {
     bool web_auth_enabled;
     bool api_auth_enabled;
     char username[AUTH_MAX_USERNAME_LEN + 1];
-    uint8_t password_hash[32];  // SHA-256
+    uint8_t password_hash[32];  // SHA-256, admin
     bool password_set;
+    uint8_t user_password_hash[32];  // SHA-256, shared climate-only user
+    bool user_password_set;
     char api_key[AUTH_API_KEY_LEN + 1];
     session_t sessions[AUTH_MAX_SESSIONS];
 } state = {};
@@ -82,6 +86,10 @@ static bool load_from_nvs(void) {
     if (nvs_get_blob(nvs, NVS_KEY_PASS_HASH, state.password_hash, &len) == ESP_OK)
         state.password_set = true;
 
+    len = sizeof(state.user_password_hash);
+    if (nvs_get_blob(nvs, NVS_KEY_USER_HASH, state.user_password_hash, &len) == ESP_OK)
+        state.user_password_set = true;
+
     len = sizeof(state.api_key);
     if (nvs_get_str(nvs, NVS_KEY_API_KEY, state.api_key, &len) != ESP_OK)
         state.api_key[0] = '\0';
@@ -106,6 +114,10 @@ static bool save_to_nvs(void) {
         nvs_set_blob(nvs, NVS_KEY_PASS_HASH, state.password_hash, sizeof(state.password_hash));
     else
         nvs_erase_key(nvs, NVS_KEY_PASS_HASH);  // no-op if absent
+    if (state.user_password_set)
+        nvs_set_blob(nvs, NVS_KEY_USER_HASH, state.user_password_hash, sizeof(state.user_password_hash));
+    else
+        nvs_erase_key(nvs, NVS_KEY_USER_HASH);  // no-op if absent
     if (state.api_key[0] != '\0')
         nvs_set_str(nvs, NVS_KEY_API_KEY, state.api_key);
 
@@ -153,10 +165,8 @@ void auth_mgr_init(void) {
     memset(&state, 0, sizeof(state));
     bool loaded = load_from_nvs();
 
-    // Default username for convenience, but intentionally NO default password:
-    // a fresh device has web auth OFF and no password, and the web handler
-    // refuses to enable web auth until the user sets one.
-    if (state.username[0] == '\0') {
+    // The admin username is fixed to "admin" and cannot be changed.
+    if (strcmp(state.username, "admin") != 0) {
         strncpy(state.username, "admin", sizeof(state.username) - 1);
         state.username[sizeof(state.username) - 1] = '\0';
         save_to_nvs();
@@ -200,62 +210,82 @@ void auth_mgr_set_web_auth_enabled(bool enabled) {
     ESP_LOGI(TAG, "web auth %s", enabled ? "enabled" : "disabled");
 }
 
-bool auth_mgr_set_credentials(const char* username, const char* password) {
-    bool changed = false;
-    if (username != NULL && username[0] != '\0') {
-        strncpy(state.username, username, AUTH_MAX_USERNAME_LEN);
-        state.username[AUTH_MAX_USERNAME_LEN] = '\0';
-        changed = true;
-    }
-    if (password != NULL && password[0] != '\0') {
-        hash_password(password, state.password_hash);
-        state.password_set = true;
-        changed = true;
-    }
-    if (changed) {
-        save_to_nvs();
-        auth_mgr_logout_all();  // force re-login after a credential change
-    }
+bool auth_mgr_set_admin_password(const char* password) {
+    if (password == NULL || password[0] == '\0') return false;
+    hash_password(password, state.password_hash);
+    state.password_set = true;
+    save_to_nvs();
+    auth_mgr_logout_all();  // force re-login after a credential change
     return true;
 }
+
+bool auth_mgr_set_user_password(const char* password) {
+    if (password == NULL || password[0] == '\0') {
+        // Remove (disable) the shared climate-only user account.
+        state.user_password_set = false;
+        memset(state.user_password_hash, 0, sizeof(state.user_password_hash));
+    } else {
+        hash_password(password, state.user_password_hash);
+        state.user_password_set = true;
+    }
+    save_to_nvs();
+    // Invalidate any active user-role sessions so a removed/changed password
+    // takes effect immediately.
+    for (int i = 0; i < AUTH_MAX_SESSIONS; i++)
+        if (state.sessions[i].active && state.sessions[i].role == AUTH_ROLE_USER)
+            state.sessions[i].active = false;
+    return true;
+}
+
+bool auth_mgr_user_password_set(void) { return state.user_password_set; }
 
 const char* auth_mgr_get_username(void) { return state.username; }
 
 bool auth_mgr_web_password_set(void) { return state.password_set; }
 
-bool auth_mgr_login(const char* username, const char* password, char* session_token) {
-    if (!state.web_auth_enabled) return true;  // auth disabled → always ok
-    if (username == NULL || password == NULL) return false;
-    if (strcmp(username, state.username) != 0) return false;
-    if (!state.password_set) return false;
+auth_role_t auth_mgr_login(const char* password, char* session_token) {
+    if (!state.web_auth_enabled) return AUTH_ROLE_ADMIN;  // auth disabled → full access
+    if (password == NULL || password[0] == '\0') return AUTH_ROLE_NONE;
 
     uint8_t input_hash[32];
     hash_password(password, input_hash);
-    if (memcmp(input_hash, state.password_hash, 32) != 0) return false;
+
+    auth_role_t role = AUTH_ROLE_NONE;
+    if (state.password_set && memcmp(input_hash, state.password_hash, 32) == 0)
+        role = AUTH_ROLE_ADMIN;  // admin checked first; "admin" is reserved
+    else if (state.user_password_set &&
+             memcmp(input_hash, state.user_password_hash, 32) == 0)
+        role = AUTH_ROLE_USER;
+    if (role == AUTH_ROLE_NONE) return AUTH_ROLE_NONE;
 
     session_t* session = find_free_session();
-    if (session == NULL) return false;
+    if (session == NULL) return AUTH_ROLE_NONE;
 
     session->active = true;
+    session->role = role;
     generate_random_hex(session->token, AUTH_SESSION_TOKEN_LEN);
     session->created_at = time(NULL);
     session->last_used = session->created_at;
     if (session_token != NULL) strcpy(session_token, session->token);
 
-    ESP_LOGI(TAG, "login ok, session created");
-    return true;
+    ESP_LOGI(TAG, "login ok, role=%s", role == AUTH_ROLE_ADMIN ? "admin" : "user");
+    return role;
+}
+
+auth_role_t auth_mgr_session_role(const char* token) {
+    if (!state.web_auth_enabled) return AUTH_ROLE_ADMIN;
+    session_t* session = find_session(token);
+    if (session == NULL) return AUTH_ROLE_NONE;
+    if (is_session_expired(session)) {
+        session->active = false;
+        return AUTH_ROLE_NONE;
+    }
+    session->last_used = time(NULL);
+    return session->role;
 }
 
 bool auth_mgr_validate_session(const char* token) {
-    if (!state.web_auth_enabled) return true;
-    session_t* session = find_session(token);
-    if (session == NULL) return false;
-    if (is_session_expired(session)) {
-        session->active = false;
-        return false;
-    }
-    session->last_used = time(NULL);
-    return true;
+    return auth_mgr_session_role(token) != AUTH_ROLE_NONE;
 }
 
 void auth_mgr_logout(const char* token) {

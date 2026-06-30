@@ -132,8 +132,6 @@ display:flex;align-items:center;justify-content:center;gap:5px}
   <div class="card">
     <h1>Mitsubishi Heat Pump</h1>
     <h2>Sign in</h2>
-    <div class="mqf"><label>Username</label>
-      <input type="text" id="lgUser" autocomplete="username"></div>
     <div class="mqf"><label>Password</label>
       <input type="password" id="lgPass" autocomplete="current-password"
         onkeydown="if(event.key==='Enter')doLogin()"></div>
@@ -315,14 +313,25 @@ display:flex;align-items:center;justify-content:center;gap:5px}
       <label>Require login for web UI</label>
       <div class="toggle"><input type="checkbox" id="secWeb" onchange="updateWebSaveState()"><span class="slider" onclick="document.getElementById('secWeb').click()"></span></div>
     </div>
-    <div class="mqf"><label>Username</label>
-      <input type="text" id="secUser" autocomplete="off" placeholder="admin"></div>
-    <div class="mqf"><label>Password</label>
+    <div class="sub" style="margin:0 0 8px">Admin password (username is always <code>admin</code>).</div>
+    <div class="mqf"><label>Admin password</label>
       <input type="password" id="secPass" autocomplete="new-password" placeholder="(unchanged)" oninput="updateWebSaveState()"></div>
     <div id="secWebHint" class="sub" style="margin:4px 0 0">No password set yet.</div>
     <div id="secWebMsg" class="status hidden" style="margin:10px 0"></div>
     <button class="btn btn-warn" id="secWebSaveBtn" onclick="saveWebLogin()">Save web login</button>
     <button class="btn btn-danger hidden" id="secLogoutBtn" onclick="doLogout()">Sign out</button>
+  </div>
+
+  <div class="card" data-grp="security">
+    <h2>Climate-only user</h2>
+    <div class="sub" style="margin:0 0 8px">An optional shared password (username <code>user</code>) that can
+      view and control climate but cannot change any settings.</div>
+    <div class="mqf"><label>User password</label>
+      <input type="password" id="secUserPass" autocomplete="new-password" placeholder="(unchanged)" oninput="updateUserSaveState()"></div>
+    <div id="secUserHint" class="sub" style="margin:4px 0 0">No user password set.</div>
+    <div id="secUserMsg" class="status hidden" style="margin:10px 0"></div>
+    <button class="btn btn-warn" id="secUserSaveBtn" onclick="saveUserLogin()">Save user password</button>
+    <button class="btn btn-danger hidden" id="secUserRemoveBtn" onclick="removeUserLogin()">Remove user</button>
   </div>
 
   <div class="card" data-grp="security">
@@ -730,7 +739,7 @@ async function saveWifi(){
 }
 
 // ── Security / auth ────────────────────────────────────────────────────
-let authState={web:false,api:false,authed:false,pwSet:false,apiKey:''};
+let authState={web:false,api:false,authed:false,pwSet:false,apiKey:'',role:'admin',userSet:false};
 function lgMsg(m,cls){const el=$('lgMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
 function secWebMsg(m,cls){const el=$('secWebMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
 function secApiMsg(m,cls){const el=$('secApiMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
@@ -757,6 +766,25 @@ function updateWebSaveState(){
   }
 }
 
+// The user-password Save button is disabled until a password is typed.
+function updateUserSaveState(){
+  const has=$('secUserPass').value.length>0;
+  $('secUserSaveBtn').disabled=!has;
+  $('secUserRemoveBtn').classList.toggle('hidden',!authState.userSet);
+  const hint=$('secUserHint');
+  hint.textContent=authState.userSet?'A user password is set.':'No user password set.';
+  $('secUserPass').placeholder=authState.userSet?'(unchanged)':'Set a password';
+}
+
+// Hide admin-only tabs when the signed-in account is the climate-only user.
+function applyRole(){
+  const user=authState.role==='user';
+  document.querySelectorAll('.tab').forEach(t=>{
+    if(t.dataset.tab!=='climate') t.style.display=user?'none':'';
+  });
+  if(user) showTab('climate');
+}
+
 async function loadAuth(){
   try{
     const a=await (await fetch('/api/auth')).json();
@@ -764,32 +792,35 @@ async function loadAuth(){
     authState.api=!!a.api_auth_enabled;
     authState.authed=!!a.authenticated;
     authState.pwSet=!!a.web_password_set;
+    authState.userSet=!!a.user_password_set;
+    authState.role=a.role||'admin';
     if(a.web_auth_enabled && !a.authenticated){
       $('loginGate').classList.remove('hidden');
-      $('lgUser').focus();
+      $('lgPass').focus();
       return false;
     }
     $('loginGate').classList.add('hidden');
+    applyRole();
     $('secWeb').checked=a.web_auth_enabled;
     $('secApi').checked=a.api_auth_enabled;
-    $('secUser').value=a.username||'';
     authState.apiKey=a.api_key||'';
     updateApiKeyState();
     $('secLogoutBtn').classList.toggle('hidden',!a.web_auth_enabled);
     updateWebSaveState();
+    updateUserSaveState();
     return true;
   }catch(e){return true}
 }
 
 async function doLogin(){
-  const u=$('lgUser').value.trim(),p=$('lgPass').value;
+  const p=$('lgPass').value;
   $('lgBtn').disabled=true;lgMsg('Signing in…','info');
   try{
     const r=await fetch('/api/login',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({username:u,password:p})});
+      body:JSON.stringify({password:p})});
     if(r.ok){location.reload();return}
-    lgMsg('Invalid username or password','err');
+    lgMsg('Invalid password','err');
   }catch(e){lgMsg('Login failed','err')}
   $('lgBtn').disabled=false;
 }
@@ -801,12 +832,11 @@ async function doLogout(){
 
 async function saveWebLogin(){
   const enabling=$('secWeb').checked;
-  const u=$('secUser').value.trim(),p=$('secPass').value;
+  const p=$('secPass').value;
   if(enabling && !p){
     secWebMsg('Enter a password to require login.','err');return;
   }
   const body={web_auth_enabled:enabling};
-  if(u)body.username=u;
   if(p)body.password=p;
   $('secWebSaveBtn').disabled=true;secWebMsg('Saving…','info');
   try{
@@ -818,6 +848,31 @@ async function saveWebLogin(){
     secWebMsg(m,'err');
   }catch(e){secWebMsg('Save failed','err')}
   updateWebSaveState();
+}
+
+function secUserMsg(m,cls){const el=$('secUserMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
+
+async function saveUserLogin(){
+  const p=$('secUserPass').value;
+  if(!p){secUserMsg('Enter a password.','err');return;}
+  $('secUserSaveBtn').disabled=true;secUserMsg('Saving…','info');
+  try{
+    const r=await fetch('/api/auth',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({user_password:p})});
+    if(r.ok){authState.userSet=true;$('secUserPass').value='';secUserMsg('User password saved','ok');updateUserSaveState();return}
+    secUserMsg('Save failed: '+r.status,'err');
+  }catch(e){secUserMsg('Save failed','err')}
+}
+
+async function removeUserLogin(){
+  if(!confirm('Remove the climate-only user account?'))return;
+  secUserMsg('Removing…','info');
+  try{
+    const r=await fetch('/api/auth',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({remove_user:true})});
+    if(r.ok){authState.userSet=false;$('secUserPass').value='';secUserMsg('User account removed','ok');updateUserSaveState();return}
+    secUserMsg('Remove failed: '+r.status,'err');
+  }catch(e){secUserMsg('Remove failed','err')}
 }
 
 async function saveApiAuth(){
@@ -868,6 +923,7 @@ function copyKey(){
 let pollTimer=null, tickN=0;
 async function pollOnce(){
   await refresh();
+  if(authState.role!=='admin'){ tickN++; return; }  // user role: climate only
   if(tickN%3===0) await loadWifi();
   if(tickN%6===0){ await refreshUpdate(); await loadMqtt(); }
   tickN++;
