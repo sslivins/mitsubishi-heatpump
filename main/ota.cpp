@@ -266,9 +266,17 @@ constexpr char kReleaseDownloadFmt[] =
 
 std::mutex            s_upd_mtx;
 UpdateInfo            s_upd;
+std::string           s_pending_source;  ///< set by check_now(), consumed by the checker task
 TaskHandle_t          s_checker = nullptr;
 uint32_t              s_interval_ms = 6 * 3600 * 1000;
 std::function<void()> s_on_changed;
+
+// Record what kicked off the upcoming check so it can be read remotely.
+void record_trigger(const char* trigger, const std::string& requester) {
+    std::lock_guard<std::mutex> lk(s_upd_mtx);
+    s_upd.last_trigger = trigger;
+    s_upd.last_requester = requester;
+}
 
 // Captures the Location response header from GitHub's 302 redirect so we can
 // read the latest tag without hitting the rate-limited api.github.com.
@@ -402,13 +410,24 @@ void perform_check() {
 void checker_task(void*) {
     vTaskDelay(pdMS_TO_TICKS(10000));  // let WiFi/SNTP/TLS time settle
     ESP_LOGI(TAG, "update check trigger: boot");
+    record_trigger("boot", "");
     perform_check();
     for (;;) {
         // Sleep until the interval elapses, or wake early when check_now() fires.
         // A non-zero return means we were notified (on-demand); zero is the timer.
         uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(s_interval_ms));
-        ESP_LOGI(TAG, "update check trigger: %s",
-                 notified ? "on-demand (check_now)" : "interval timer");
+        std::string src;
+        {
+            std::lock_guard<std::mutex> lk(s_upd_mtx);
+            src = s_pending_source;
+            s_pending_source.clear();
+        }
+        const char* trig = notified ? "on-demand (check_now)" : "interval timer";
+        if (notified && !src.empty())
+            ESP_LOGI(TAG, "update check trigger: %s — %s", trig, src.c_str());
+        else
+            ESP_LOGI(TAG, "update check trigger: %s", trig);
+        record_trigger(notified ? "on-demand" : "interval", notified ? src : std::string());
         perform_check();
     }
 }
@@ -428,7 +447,11 @@ void start_update_checker(uint32_t interval_seconds) {
     }
 }
 
-void check_now() {
+void check_now(const char* source) {
+    {
+        std::lock_guard<std::mutex> lk(s_upd_mtx);
+        s_pending_source = source ? source : "";
+    }
     if (s_checker) xTaskNotifyGive(s_checker);
 }
 
