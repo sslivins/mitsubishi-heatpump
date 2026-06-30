@@ -61,9 +61,10 @@ background:#fff;border-radius:50%;transition:.2s}
 .btn-warn{background:#21262d;color:#f0883e;border:1px solid #30363d;margin-top:8px}
 .btn-warn:hover{background:#30363d}
 .adv{margin-top:14px;border-top:1px solid #21262d;padding-top:12px}
-.adv>summary{cursor:pointer;font-size:.9em;color:#c9d1d9;list-style:none;user-select:none;display:flex;align-items:center;gap:8px}
+.adv>summary{cursor:pointer;font-size:.78em;text-transform:uppercase;letter-spacing:.05em;font-weight:600;color:#8b949e;list-style:none;user-select:none;display:flex;align-items:center;gap:8px}
+.adv>summary:hover{color:#c9d1d9}
 .adv>summary::-webkit-details-marker{display:none}
-.adv>summary::before{content:"\25B8";color:#8b949e;font-size:1.15em;line-height:1}
+.adv>summary::before{content:"\25B8";color:#8b949e;font-size:1.15em;line-height:1;display:inline-block;width:1em;text-align:center}
 .adv[open]>summary::before{content:"\25BE"}
 .btn-danger{background:#21262d;color:#f85149;border:1px solid #30363d;margin-top:8px}
 .btn-danger:hover{background:#30363d}
@@ -210,7 +211,7 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
     </div>
 
     <details class="adv">
-      <summary>Fan &amp; vanes</summary>
+      <summary>Fan &amp; Vanes</summary>
       <div class="row">
         <label>Fan</label>
         <select id="fan" onchange="setField('fan',this.value)">
@@ -228,8 +229,8 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
       <div class="row" style="margin-bottom:0">
         <label>Wide Vane</label>
         <select id="wideVane" onchange="setField('wideVane',this.value)">
-          <option>&lt;&lt;</option><option>&lt;</option><option>|</option>
-          <option>&gt;</option><option>&gt;&gt;</option><option>&lt;&gt;</option><option>SWING</option>
+          <option value="&lt;&lt;">Far left</option><option value="&lt;">Left</option><option value="|">Center</option>
+          <option value="&gt;">Right</option><option value="&gt;&gt;">Far right</option><option value="&lt;&gt;">Wide</option><option value="SWING">Swing</option>
         </select>
       </div>
     </details>
@@ -778,7 +779,7 @@ function updateWebAccessState(){
   // Administrator
   const aHint=$('secWebHint');
   if(authState.pwSet){
-    aHint.textContent=adminTyped?'Password will be updated on save.':'A password is set — leave blank to keep it.';
+    aHint.textContent=adminTyped?'Password will be updated on save.':'';
     $('secPass').placeholder='••••••••';
   }else{
     aHint.textContent=enabling?'Required to enable login.':'No password set yet.';
@@ -787,7 +788,7 @@ function updateWebAccessState(){
   // Climate-only
   const uHint=$('secUserHint');
   if(authState.userSet){
-    uHint.textContent=userTyped?'Password will be updated on save.':'A password is set — leave blank to keep it.';
+    uHint.textContent=userTyped?'Password will be updated on save.':'';
     $('secUserPass').placeholder='••••••••';
   }else{
     uHint.textContent='No climate-only password set.';
