@@ -83,9 +83,28 @@ cursor:pointer;user-select:none;transition:.15s}
 .tab.active{background:#e60012;color:#fff}
 .panel{display:none}
 .panel.active{display:block}
+.overlay{position:fixed;inset:0;background:#0e1116;display:flex;align-items:center;
+justify-content:center;padding:16px;z-index:100}
+.overlay .card{width:100%;max-width:360px;margin:0}
+.overlay h1{margin-bottom:14px}
+.keyrow{display:flex;gap:8px}
+.keyrow input{flex:1;font-family:ui-monospace,monospace;font-size:.74em}
 </style>
 </head>
 <body>
+<div class="overlay hidden" id="loginGate">
+  <div class="card">
+    <h1>Mitsubishi Heat Pump</h1>
+    <h2>Sign in</h2>
+    <div class="mqf"><label>Username</label>
+      <input type="text" id="lgUser" autocomplete="username"></div>
+    <div class="mqf"><label>Password</label>
+      <input type="password" id="lgPass" autocomplete="current-password"
+        onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <div id="lgMsg" class="status hidden" style="margin:10px 0"></div>
+    <button class="btn btn-warn" id="lgBtn" onclick="doLogin()">Sign in</button>
+  </div>
+</div>
 <div class="wrap">
   <h1>Mitsubishi Heat Pump</h1>
   <div class="hver" id="hdrver">firmware v—</div>
@@ -245,6 +264,31 @@ cursor:pointer;user-select:none;transition:.15s}
       <div id="otaState" class="status hidden" style="margin-top:12px"></div>
       <div class="pbar" id="otaBar"><i></i></div>
     </details>
+  </div>
+
+  <div class="card">
+    <h2>Security</h2>
+    <div class="row">
+      <label>Require login for web UI</label>
+      <div class="toggle"><input type="checkbox" id="secWeb"><span class="slider" onclick="document.getElementById('secWeb').click()"></span></div>
+    </div>
+    <div class="mqf"><label>Username</label>
+      <input type="text" id="secUser" autocomplete="off" placeholder="admin"></div>
+    <div class="mqf"><label>Password</label>
+      <input type="password" id="secPass" autocomplete="new-password" placeholder="(unchanged)"></div>
+    <div class="row" style="margin-top:14px">
+      <label>Require API key for /api</label>
+      <div class="toggle"><input type="checkbox" id="secApi"><span class="slider" onclick="document.getElementById('secApi').click()"></span></div>
+    </div>
+    <div class="mqf" style="align-items:flex-start"><label>API key</label>
+      <div class="keyrow" style="max-width:62%">
+        <input type="text" id="secKey" readonly placeholder="—"></div>
+    </div>
+    <button class="btn" onclick="copyKey()">Copy API key</button>
+    <button class="btn btn-warn" onclick="regenKey()">Regenerate API key</button>
+    <div id="secMsg" class="status hidden" style="margin:10px 0"></div>
+    <button class="btn btn-warn" id="secSaveBtn" onclick="saveAuth()">Save security settings</button>
+    <button class="btn btn-danger hidden" id="secLogoutBtn" onclick="doLogout()">Sign out</button>
   </div>
   </div><!-- /panel-system -->
 </div>
@@ -463,10 +507,6 @@ async function saveMqtt(){
   }catch(e){mqMsg('Rebooting…','ok')}
 }
 
-refresh();
-setInterval(refresh,5000);
-refreshUpdate();
-setInterval(refreshUpdate,30000);
 // ── WiFi settings ──────────────────────────────────────────────────────
 function wfMsg(m,cls){const el=$('wfMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
 
@@ -496,10 +536,93 @@ async function saveWifi(){
   }catch(e){wfMsg('Rebooting…','ok')}
 }
 
-loadMqtt();
-setInterval(loadMqtt,30000);
-loadWifi();
-setInterval(loadWifi,15000);
+// ── Security / auth ────────────────────────────────────────────────────
+let authState={web:false,api:false,authed:false};
+function lgMsg(m,cls){const el=$('lgMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
+function secMsg(m,cls){const el=$('secMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
+
+async function loadAuth(){
+  try{
+    const a=await (await fetch('/api/auth')).json();
+    authState.web=!!a.web_auth_enabled;
+    authState.api=!!a.api_auth_enabled;
+    authState.authed=!!a.authenticated;
+    if(a.web_auth_enabled && !a.authenticated){
+      $('loginGate').classList.remove('hidden');
+      $('lgUser').focus();
+      return false;
+    }
+    $('loginGate').classList.add('hidden');
+    $('secWeb').checked=a.web_auth_enabled;
+    $('secApi').checked=a.api_auth_enabled;
+    $('secUser').value=a.username||'';
+    $('secKey').value=a.api_key||'';
+    $('secLogoutBtn').classList.toggle('hidden',!a.web_auth_enabled);
+    return true;
+  }catch(e){return true}
+}
+
+async function doLogin(){
+  const u=$('lgUser').value.trim(),p=$('lgPass').value;
+  $('lgBtn').disabled=true;lgMsg('Signing in…','info');
+  try{
+    const r=await fetch('/api/login',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username:u,password:p})});
+    if(r.ok){location.reload();return}
+    lgMsg('Invalid username or password','err');
+  }catch(e){lgMsg('Login failed','err')}
+  $('lgBtn').disabled=false;
+}
+
+async function doLogout(){
+  try{await fetch('/api/logout',{method:'POST'})}catch(e){}
+  location.reload();
+}
+
+async function saveAuth(){
+  const body={web_auth_enabled:$('secWeb').checked,api_auth_enabled:$('secApi').checked};
+  const u=$('secUser').value.trim(),p=$('secPass').value;
+  if(u)body.username=u;
+  if(p)body.password=p;
+  $('secSaveBtn').disabled=true;secMsg('Saving…','info');
+  try{
+    const r=await fetch('/api/auth',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.ok){secMsg('Saved — applying…','ok');setTimeout(()=>location.reload(),700);return}
+    secMsg('Save failed: '+r.status,'err');
+  }catch(e){secMsg('Save failed','err')}
+  $('secSaveBtn').disabled=false;
+}
+
+async function regenKey(){
+  if(!confirm('Generate a new API key? The current key will stop working.'))return;
+  try{
+    const r=await fetch('/api/auth',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({regenerate_key:true})});
+    const j=await r.json();
+    if(j.api_key){$('secKey').value=j.api_key;secMsg('New API key generated','ok')}
+    else secMsg('Failed to regenerate key','err');
+  }catch(e){secMsg('Request failed','err')}
+}
+
+function copyKey(){
+  const k=$('secKey').value;
+  if(!k){secMsg('No API key to copy','err');return}
+  if(navigator.clipboard) navigator.clipboard.writeText(k);
+  else{$('secKey').select();document.execCommand('copy')}
+  secMsg('API key copied','ok');
+}
+
+// ── Startup (gated by auth) ────────────────────────────────────────────
+(async()=>{
+  const ok=await loadAuth();
+  if(!ok) return;  // login gate shown; loops start after login + reload
+  refresh();        setInterval(refresh,5000);
+  refreshUpdate();  setInterval(refreshUpdate,30000);
+  loadMqtt();       setInterval(loadMqtt,30000);
+  loadWifi();       setInterval(loadWifi,15000);
+})();
 </script>
 </body>
 </html>
