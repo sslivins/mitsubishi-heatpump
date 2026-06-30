@@ -221,7 +221,14 @@ void auth_mgr_set_web_auth_enabled(bool enabled) {
 
 bool auth_mgr_set_admin_password(const char* password) {
     if (password == NULL || password[0] == '\0') return false;
-    hash_password(password, state.password_hash);
+    uint8_t h[32];
+    hash_password(password, h);
+    // The admin and user passwords must differ. Login is password-only and the
+    // admin is matched first, so an identical user password would silently
+    // resolve to admin (a privilege escalation). Reject the collision.
+    if (state.user_password_set && memcmp(h, state.user_password_hash, 32) == 0)
+        return false;
+    memcpy(state.password_hash, h, 32);
     state.password_set = true;
     save_to_nvs();
     auth_mgr_logout_all();  // force re-login after a credential change
@@ -234,7 +241,13 @@ bool auth_mgr_set_user_password(const char* password) {
         state.user_password_set = false;
         memset(state.user_password_hash, 0, sizeof(state.user_password_hash));
     } else {
-        hash_password(password, state.user_password_hash);
+        uint8_t h[32];
+        hash_password(password, h);
+        // Must differ from the admin password (see auth_mgr_set_admin_password):
+        // a user password equal to admin's would log the user in as admin.
+        if (state.password_set && memcmp(h, state.password_hash, 32) == 0)
+            return false;
+        memcpy(state.user_password_hash, h, 32);
         state.user_password_set = true;
     }
     save_to_nvs();

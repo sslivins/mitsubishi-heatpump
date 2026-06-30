@@ -864,7 +864,9 @@ async function saveUserLogin(){
     const r=await fetch('/api/auth',{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({user_password:p})});
     if(r.ok){authState.userSet=true;$('secUserPass').value='';secUserMsg('User password saved','ok');updateUserSaveState();return}
-    secUserMsg('Save failed: '+r.status,'err');
+    let m='Save failed: '+r.status;
+    try{const j=await r.json();if(j.error)m=j.error;}catch(_){}
+    secUserMsg(m,'err');
   }catch(e){secUserMsg('Save failed','err')}
 }
 
