@@ -407,7 +407,11 @@ function fmtUptime(s){
 
 async function refresh(){
   try{
-    const s=await (await jget('/api/status')).json();
+    const r=await jget('/api/status');
+    // A 401 means our session lapsed (e.g. server restart) — re-show the
+    // login gate instead of rendering an error body as garbage status.
+    if(r.status===401){ $('loginGate').classList.remove('hidden'); $('lgPass').focus(); return; }
+    const s=await r.json();
     badge($('bWifi'),true);
     badge($('bUnit'),s.unit_connected);
     badge($('bMqtt'),s.mqtt_connected);
