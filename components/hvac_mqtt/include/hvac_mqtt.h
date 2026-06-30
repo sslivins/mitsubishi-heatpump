@@ -99,11 +99,15 @@ esp_err_t publish_update_discovery();
 
 /// Publish the firmware update state (retained) as JSON to .../update/state:
 /// {"installed_version","latest_version","release_url","release_summary"}.
-/// HA flags an update when latest_version > installed_version.
+/// HA flags an update when latest_version > installed_version. When
+/// @p update_percentage is >= 0 the payload also carries update_percentage +
+/// in_progress=true so Home Assistant shows a live progress bar during an
+/// install; passing -1 publishes update_percentage=null to clear it.
 esp_err_t publish_update_state(const std::string& installed,
                                const std::string& latest,
                                const std::string& release_url = "",
-                               const std::string& release_summary = "");
+                               const std::string& release_summary = "",
+                               int update_percentage = -1);
 
 bool is_connected();
 
