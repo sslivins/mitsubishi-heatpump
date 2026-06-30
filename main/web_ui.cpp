@@ -34,6 +34,10 @@ Hooks          s_hooks;
 
 void set_cors(httpd_req_t* req) {
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    // API responses must never be cached. A stale /api/auth in particular
+    // would keep the login gate up (or hidden) even after the real state
+    // changed, producing a "stuck on the login page" loop.
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 }
 
 // ── Auth middleware ────────────────────────────────────────────────────
@@ -138,6 +142,7 @@ esp_err_t handle_root(httpd_req_t* req) {
     size_t len = (size_t)(index_html_gz_end - index_html_gz_start);
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     return httpd_resp_send(req, (const char*)index_html_gz_start, len);
 }
 
