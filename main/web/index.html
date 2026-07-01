@@ -415,6 +415,7 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
 
     <div id="secWebMsg" class="status hidden" style="margin:14px 0 0"></div>
     <button class="btn btn-warn" id="secWebSaveBtn" onclick="saveWebAccess()">Save web access</button>
+    <div id="secSaveNote" class="hint" style="margin:8px 0 0;text-align:center"></div>
   </div>
 
   <div class="card" data-grp="security">
@@ -486,6 +487,9 @@ function showTab(name){
   // Scan on entering the Network tab; the poll loop keeps it fresh while shown.
   netTabActive=(name==='network');
   if(netTabActive && authState.role==='admin'){ closeJoin(); scanWifi(true); }
+  // Re-sync stored auth state when opening Security so the pending-change gate
+  // and the toggle reflect the current server state, not a stale snapshot.
+  if(name==='security'){ loadAuth(); }
 }
 
 function badge(el,on){el.className='badge '+(on?'on':'off')}
@@ -987,12 +991,29 @@ function updateWebAccessState(){
   $('secUserRemoveBtn').classList.toggle('hidden',!authState.userSet);
   // Grey out the password setup blocks when web login is disabled — they don't apply.
   $('secWebBody').classList.toggle('dimmed',!enabling);
-  // Disable Save on any lockout-adjacent state: a fresh admin password is
-  // required but missing, the two password fields disagree, or a typed password
-  // isn't confirmed.
+  // Lockout-adjacent guards apply ONLY while enabling. Disabling web login must
+  // never be blocked by password-field state — it's the recovery path.
   const freshMissing=freshPwNeeded&&!adminTyped;
   const unconfirmed=adminTyped&&!confirmTyped;
-  $('secWebSaveBtn').disabled=freshMissing||pwMismatch||unconfirmed;
+  const passwordGuards=enabling&&(freshMissing||pwMismatch||unconfirmed);
+  // Only enable Save when there's actually something to apply: the toggle differs
+  // from the stored state, or (while enabling) a password was typed. Typed
+  // passwords don't count while disabling — they're dropped from the POST then.
+  const toggled=enabling!==authState.web;
+  const credentialChange=enabling&&(adminTyped||userTyped);
+  const hasPendingChange=toggled||credentialChange;
+  $('secWebSaveBtn').disabled=passwordGuards||!hasPendingChange;
+  // Explain a disabled Save so it isn't mysterious on a security panel.
+  const note=$('secSaveNote');
+  if(passwordGuards){
+    note.textContent = pwMismatch ? 'Passwords do not match.'
+      : freshMissing ? 'Enter and confirm an administrator password to enable login.'
+      : 'Confirm the administrator password.';
+  }else if(!hasPendingChange){
+    note.textContent='No web access changes to save.';
+  }else{
+    note.textContent='';
+  }
 }
 
 // Hide admin-only tabs when the signed-in account is the climate-only user.
@@ -1119,17 +1140,19 @@ async function commitNameEdit(){
 
 async function saveWebAccess(){
   const enabling=$('secWeb').checked;
-  const adminPass=$('secPass').value;
-  const adminPass2=$('secPass2').value;
-  const userPass=$('secUserPass').value;
-  // Turning login on from off requires a freshly typed admin password.
+  const body={web_auth_enabled:enabling};
+  // Password fields only apply when ENABLING login. When disabling, read them as
+  // empty so validation is skipped and they're dropped from the POST below —
+  // nothing about the password state can block the OFF (recovery) path.
+  const adminPass=enabling?$('secPass').value:'';
+  const adminPass2=enabling?$('secPass2').value:'';
+  const userPass=enabling?$('secUserPass').value:'';
   if(enabling && !authState.web && !adminPass){
     secWebMsg('Enter an administrator password to enable login.','err');return;
   }
   if(adminPass && adminPass!==adminPass2){
     secWebMsg('Passwords do not match.','err');return;
   }
-  const body={web_auth_enabled:enabling};
   if(adminPass)body.password=adminPass;
   if(userPass)body.user_password=userPass;
   $('secWebSaveBtn').disabled=true;secWebMsg('Saving…','info');
