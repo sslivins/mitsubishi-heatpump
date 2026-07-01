@@ -85,6 +85,16 @@ static const int     ROOM_TEMP_MAP[32] = {10, 11, 12, 13, 14, 15, 16, 17,
                                           26, 27, 28, 29, 30, 31, 32, 33,
                                           34, 35, 36, 37, 38, 39, 40, 41};
 
+// Extended-telemetry maps (0x09 power/standby reply). Additive decode only;
+// these bytes come from an info mode we already poll (see INFOMODE) but did not
+// previously decode. Values/formulas per echavet/MitsubishiCN105ESPHome.
+static const uint8_t SUB_MODE_B[6]   = {0x00, 0x01, 0x02, 0x04, 0x08, 0x10};
+static const char*   SUB_MODE_MAP[6] = {"NORMAL", "WARMUP", "DEFROST",
+                                        "PREHEAT", "STANDBY", "OFF"};
+static const uint8_t STAGE_B[7]      = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+static const char*   STAGE_MAP[7]    = {"IDLE", "LOW", "GENTLE", "MEDIUM",
+                                        "MODERATE", "HIGH", "DIFFUSE"};
+
 // --- small helpers ----------------------------------------------------------
 static inline uint32_t now_ms() {
     return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
@@ -441,7 +451,6 @@ int HeatPump::readPacket_(uint32_t start_to_ms) {
 }
 
 int HeatPump::decodeInfo_(const uint8_t* data, int len) {
-    (void)len;
     switch (data[0]) {
         case 0x02: {  // settings
             Settings rs = current_;
@@ -463,6 +472,17 @@ int HeatPump::decodeInfo_(const uint8_t* data, int len) {
             rs.wideVane = lookupValStr(WIDEVANE_MAP, WIDEVANE_B, 7,
                                        static_cast<uint8_t>(data[10] & 0x0F));
             wideVaneAdj_ = ((data[10] & 0xF0) == 0x80);
+
+            // Extended telemetry: target humidity (data[12], 1..100 %). Additive
+            // — decoded from the same 0x02 reply; not part of the SET contract.
+            if (len >= 13 && data[12] >= 1 && data[12] <= 100) {
+                int th = static_cast<int>(data[12]);
+                if (!status_.has_targetHumidity || th != status_.targetHumidity) {
+                    status_.targetHumidity = th;
+                    status_.has_targetHumidity = true;
+                    statusChanged_ = true;
+                }
+            }
 
             bool changed = (rs.power != current_.power) ||
                            (rs.mode != current_.mode) ||
@@ -512,6 +532,29 @@ int HeatPump::decodeInfo_(const uint8_t* data, int len) {
                 status_.roomTemperature = rt;
                 statusChanged_ = true;
             }
+
+            // Extended telemetry from the same 0x03 reply:
+            //   outside air/coil temp: data[5] (>1) -> (data[5]-128)/2 °C
+            //   cumulative runtime:    (data[11]<<16|data[12]<<8|data[13]) / 60 h
+            if (len >= 6 && data[5] > 1) {
+                float ot = (static_cast<float>(data[5]) - 128.0f) / 2.0f;
+                if (!status_.has_outsideTemp || ot != status_.outsideTemp) {
+                    status_.outsideTemp = ot;
+                    status_.has_outsideTemp = true;
+                    statusChanged_ = true;
+                }
+            }
+            if (len >= 14) {
+                uint32_t rawMin = (static_cast<uint32_t>(data[11]) << 16) |
+                                  (static_cast<uint32_t>(data[12]) << 8) |
+                                  static_cast<uint32_t>(data[13]);
+                float rh = static_cast<float>(rawMin) / 60.0f;
+                if (!status_.has_runtimeHours || rh != status_.runtimeHours) {
+                    status_.runtimeHours = rh;
+                    status_.has_runtimeHours = true;
+                    statusChanged_ = true;
+                }
+            }
             return RCVD_PKT_ROOM_TEMP;
         }
 
@@ -522,6 +565,65 @@ int HeatPump::decodeInfo_(const uint8_t* data, int len) {
                 status_.operating = op;
                 status_.compressorFrequency = cf;
                 statusChanged_ = true;
+            }
+            // Extended telemetry from the same 0x06 reply:
+            //   input power:  (data[5]<<8|data[6]) W
+            //   energy usage: (data[7]<<8|data[8]) / 10 kWh
+            if (len >= 7) {
+                int ip = (static_cast<int>(data[5]) << 8) | static_cast<int>(data[6]);
+                if (!status_.has_inputPowerW || ip != status_.inputPowerW) {
+                    status_.inputPowerW = ip;
+                    status_.has_inputPowerW = true;
+                    statusChanged_ = true;
+                }
+            }
+            if (len >= 9) {
+                float ek = static_cast<float>(
+                               (static_cast<int>(data[7]) << 8) |
+                               static_cast<int>(data[8])) / 10.0f;
+                if (!status_.has_energyKwh || ek != status_.energyKwh) {
+                    status_.energyKwh = ek;
+                    status_.has_energyKwh = true;
+                    statusChanged_ = true;
+                }
+            }
+            return RCVD_PKT_STATUS;
+        }
+
+        case 0x09: {  // power/standby: sub-mode + fan stage (additive telemetry)
+            if (len >= 5) {
+                std::string sm;
+                for (int i = 0; i < 6; i++)
+                    if (SUB_MODE_B[i] == data[3]) { sm = SUB_MODE_MAP[i]; break; }
+                std::string st;
+                for (int i = 0; i < 7; i++)
+                    if (STAGE_B[i] == data[4]) { st = STAGE_MAP[i]; break; }
+                if (!sm.empty() && sm != status_.subMode) {
+                    status_.subMode = sm;
+                    statusChanged_ = true;
+                }
+                if (!st.empty() && st != status_.stage) {
+                    status_.stage = st;
+                    statusChanged_ = true;
+                }
+            }
+            return RCVD_PKT_STATUS;
+        }
+
+        case 0x04: {  // error info (additive telemetry)
+            if (len >= 6) {
+                uint8_t ecode = data[4] & 0x7F;  // bit7 is a status flag, not error
+                uint8_t esub  = data[5];
+                char buf[32];
+                if (ecode == 0x00 && esub == 0x00) {
+                    snprintf(buf, sizeof(buf), "No Error");
+                } else {
+                    snprintf(buf, sizeof(buf), "Error 0x%02X sub 0x%02X", ecode, esub);
+                }
+                if (status_.errorCode != buf) {
+                    status_.errorCode = buf;
+                    statusChanged_ = true;
+                }
             }
             return RCVD_PKT_STATUS;
         }

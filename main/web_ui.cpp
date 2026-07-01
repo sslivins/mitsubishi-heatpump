@@ -227,6 +227,25 @@ esp_err_t handle_get_settings(httpd_req_t* req) {
     cJSON_AddBoolToObject(root, "operating", sta.operating);
     cJSON_AddNumberToObject(root, "compressorFrequency", sta.compressorFrequency);
 
+    // Extended telemetry — only emitted when the unit actually reported the
+    // field, so the UI can render "--" for anything absent.
+    if (sta.has_outsideTemp)
+        cJSON_AddNumberToObject(root, "outsideTemp", sta.outsideTemp);
+    if (sta.has_runtimeHours)
+        cJSON_AddNumberToObject(root, "runtimeHours", sta.runtimeHours);
+    if (sta.has_inputPowerW)
+        cJSON_AddNumberToObject(root, "inputPowerW", sta.inputPowerW);
+    if (sta.has_energyKwh)
+        cJSON_AddNumberToObject(root, "energyKwh", sta.energyKwh);
+    if (sta.has_targetHumidity)
+        cJSON_AddNumberToObject(root, "targetHumidity", sta.targetHumidity);
+    if (!sta.subMode.empty())
+        cJSON_AddStringToObject(root, "subMode", sta.subMode.c_str());
+    if (!sta.stage.empty())
+        cJSON_AddStringToObject(root, "stage", sta.stage.c_str());
+    if (!sta.errorCode.empty())
+        cJSON_AddStringToObject(root, "errorCode", sta.errorCode.c_str());
+
     char* str = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, str);
