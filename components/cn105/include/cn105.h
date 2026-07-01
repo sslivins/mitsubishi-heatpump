@@ -131,6 +131,8 @@ private:
     int   infoMode_{0};
     uint32_t lastSend_{0};
     uint32_t lastRecv_{0};
+    uint32_t connectBackoff_{1000};    ///< current reconnect interval (ms), backs off on failure
+    uint32_t lastConnectAttempt_{0};   ///< when we last sent a CONNECT handshake
     bool  settingsChanged_{false};  ///< set during a pump iteration, consumed by fireCallbacks_
     bool  statusChanged_{false};
 
