@@ -7,7 +7,8 @@
 /// ESP-IDF/C++ port of the well-known SwiCago/HeatPump Arduino library used by
 /// gysmo38/mitsubishi2MQTT, exposing the same conceptual API.
 ///
-/// PORTING STATUS: interface complete; packet engine is a STUB (see cn105.cpp).
+/// PORTING STATUS: full packet engine implemented (see cn105.cpp). Not yet
+/// validated against physical hardware.
 ///
 /// Reference: https://github.com/SwiCago/HeatPump
 
@@ -19,6 +20,9 @@
 #include <utility>
 #include "driver/uart.h"
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include <atomic>
 
 namespace cn105 {
 
@@ -50,7 +54,7 @@ using PacketCallback   = std::function<void(const uint8_t* data, size_t len,
 /// CN105 protocol driver. One instance per indoor unit (one UART).
 class HeatPump {
 public:
-    HeatPump() = default;
+    HeatPump();  // creates internal mutexes
 
     /// Bind to a UART and send the connect handshake. Installs the UART driver
     /// at 2400 baud / 8-E-1 on the given pins.
@@ -76,31 +80,84 @@ public:
     /// a remote sensor instead of its own (the "remote_temp/set" feature).
     void setRemoteTemperature(float celsius);
 
-    // --- Accessors ---
-    Settings getSettings() const { return settings_; }
-    Status   getStatus() const { return status_; }
-    bool     isConnected() const { return settings_.connected; }
+    // --- Accessors (thread-safe: return a snapshot published by the pump) ---
+    Settings getSettings() const;
+    Status   getStatus() const;
+    bool     isConnected() const;
 
-    // --- Callbacks ---
+    // --- Callbacks (set once at init, before the pump task starts) ---
     void setSettingsChangedCallback(SettingsCallback cb) { on_settings_ = std::move(cb); }
     void setStatusChangedCallback(StatusCallback cb) { on_status_ = std::move(cb); }
     void setPacketCallback(PacketCallback cb) { on_packet_ = std::move(cb); }
 
     /// Apply external (e.g. handheld remote) changes locally when they arrive.
-    void enableExternalUpdate() { external_update_ = true; }
-    /// Automatically flush queued writes from update() rather than requiring an
-    /// explicit flush call.
-    void enableAutoUpdate() { auto_update_ = true; }
+    void enableExternalUpdate() { externalUpdate_ = true; autoUpdate_ = true; }
+    /// Automatically flush queued writes from update().
+    void enableAutoUpdate() { autoUpdate_ = true; }
 
 private:
+    // ---- protocol helpers (implemented in cn105.cpp) ----
+    void pump_();                              ///< one iteration of the state machine
+    void sendConnect_();                       ///< send 0x5A handshake + read reply
+    void flushWanted_(const Settings& wanted); ///< send SET packet, await 0x61 ACK
+    void sendInfoPacket_(int packetType);      ///< send 0x42 info request + read reply
+    void sendRemoteTemp_(float celsius);       ///< send 0x07 remote-temperature packet
+    void drainPackets_(int maxPackets);        ///< read up to N buffered packets
+    int  readPacket_(uint32_t start_to_ms);    ///< parse one frame -> RCVD_PKT_*
+    int  decodeInfo_(const uint8_t* data, int len); ///< dispatch a 0x62 info reply
+    void writePacket_(const uint8_t* packet, int len);
+    int  readByte_(uint32_t to_ms);
+    int  available_();
+    bool canSend_(bool isInfo) const;
+    void createSetPacket_(uint8_t* packet, const Settings& wanted);
+    void createInfoPacket_(uint8_t* packet, int packetType);
+    void publishSnapshot_();
+    void fireCallbacks_();
+    static uint8_t checkSum_(const uint8_t* bytes, int len);
+
     uart_port_t port_{UART_NUM_1};
-    Settings settings_{};
-    Status status_{};
+    int tx_gpio_{-1};
+    int rx_gpio_{-1};
+
+    // Owned exclusively by the pump task (update()); no lock required.
+    Settings current_{};
+    Status   status_{};
+    bool  connected_{false};
+    bool  firstRun_{true};
+    bool  tempMode_{false};
+    bool  wideVaneAdj_{false};
+    bool  autoUpdate_{false};
+    bool  externalUpdate_{false};
+    int   infoMode_{0};
+    uint32_t lastSend_{0};
+    uint32_t lastRecv_{0};
+    bool  settingsChanged_{false};  ///< set during a pump iteration, consumed by fireCallbacks_
+    bool  statusChanged_{false};
+
+    // Wanted settings + per-field dirty flags (guarded by want_mtx_).
+    Settings wanted_{};
+    bool  d_power_{false};
+    bool  d_mode_{false};
+    bool  d_temp_{false};
+    bool  d_fan_{false};
+    bool  d_vane_{false};
+    bool  d_wideVane_{false};
+    uint32_t lastWanted_{0};
+    bool  pendingRemoteTempSet_{false};
+    float pendingRemoteTemp_{0.0f};
+    mutable SemaphoreHandle_t want_mtx_{nullptr};
+
+    // Published snapshot for cross-task accessors (guarded by pub_mtx_).
+    Settings pub_settings_{};
+    Status   pub_status_{};
+    bool     pub_connected_{false};
+    mutable SemaphoreHandle_t pub_mtx_{nullptr};
+
+    std::atomic<bool> sync_requested_{false};
+
     SettingsCallback on_settings_{};
-    StatusCallback on_status_{};
-    PacketCallback on_packet_{};
-    bool external_update_{false};
-    bool auto_update_{false};
+    StatusCallback   on_status_{};
+    PacketCallback   on_packet_{};
 };
 
 }  // namespace cn105

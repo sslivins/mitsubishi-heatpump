@@ -251,6 +251,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     <div class="tab" data-tab="network" onclick="showTab('network')">Network</div>
     <div class="tab" data-tab="security" onclick="showTab('security')">Security</div>
     <div class="tab" data-tab="system" onclick="showTab('system')">System</div>
+    <div class="tab" data-tab="sensors" onclick="showTab('sensors')">Sensors</div>
   </div>
 
   <div class="panel active" id="panel-climate">
@@ -463,6 +464,19 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
       &mdash; interactive OpenAPI docs for every <code>/api</code> endpoint.
     </p>
   </div>
+
+  <div class="card" data-grp="sensors">
+    <h2>Heat pump sensors</h2>
+    <p class="note" id="diagNote" style="margin:0 0 12px">Live telemetry read from
+      the unit over the CN105 serial link. Shows <code>--</code> until a unit is
+      connected.</p>
+    <div class="grid">
+      <div class="stat"><div class="k">Unit link</div><div class="v" id="dgLink">--</div></div>
+      <div class="stat"><div class="k">Operating</div><div class="v" id="dgOp">--</div></div>
+      <div class="stat"><div class="k">Compressor</div><div class="v" id="dgComp">--</div></div>
+      <div class="stat"><div class="k">Unit room temp</div><div class="v" id="dgRoom">--</div></div>
+    </div>
+  </div>
   </div><!-- /panel-system -->
 </div>
 
@@ -497,7 +511,7 @@ function showTab(name){
   // Climate and Power are their own panels. Network, Security and System all
   // live inside #panel-system and are shown by filtering cards on data-grp,
   // so the System tab stays uncluttered without separate panel containers.
-  const sysGroups=['system','network','security'];
+  const sysGroups=['system','network','security','sensors'];
   const inSys=sysGroups.includes(name);
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
   $('panel-climate').classList.toggle('active',name==='climate');
@@ -550,6 +564,7 @@ async function refresh(){
     $('psrc').textContent=p.present?(p.source||'--'):'n/a';
     $('chg').textContent=p.present?(p.charging?'yes':'no'):'n/a';
     $('stubNote').style.display=s.unit_connected?'none':'block';
+    $('dgLink').textContent=s.unit_connected?'connected':'not connected';
 
     if(!userEditing){
       const c=await (await fetch('/api/settings')).json();
@@ -562,6 +577,11 @@ async function refresh(){
       if(c.vane)$('vane').value=c.vane;
       if(c.wideVane)$('wideVane').value=c.wideVane;
       renderClimate();
+      // Diagnostics tab — live serial telemetry.
+      const conn=!!c.connected;
+      $('dgOp').textContent=conn?(c.operating?'yes':'no'):'--';
+      $('dgComp').textContent=(conn&&c.compressorFrequency!=null)?(c.compressorFrequency+' Hz'):'--';
+      $('dgRoom').textContent=(conn&&c.roomTemperature!=null&&c.roomTemperature>0)?(c.roomTemperature.toFixed(1)+' °C'):'--';
     }
   }catch(e){
     badge($('bWifi'),false);

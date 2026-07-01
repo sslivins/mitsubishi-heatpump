@@ -277,7 +277,7 @@ extern "C" void app_main() {
     ota::start_update_checker();
 
     // Heat pump protocol.
-    xTaskCreate(cn105_task, "cn105", 4096, nullptr, 6, nullptr);
+    xTaskCreate(cn105_task, "cn105", 8192, nullptr, 6, nullptr);
 
     ESP_LOGI(TAG, "mitsubishi-heatpump %s running",
              esp_app_get_description()->version);
