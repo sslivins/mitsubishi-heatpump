@@ -107,32 +107,47 @@ static bool load_from_nvs(void) {
     return true;
 }
 
-static bool save_to_nvs(void) {
+// Persist the whole auth state. Returns ESP_OK only if the write AND commit
+// both succeed — callers MUST treat a non-OK result as "not persisted" so RAM
+// state is never reported as saved when NVS actually rejected it. A half-write
+// that survives a reboot is a lockout vector (e.g. web_auth on but no password
+// hash), so we surface failures rather than silently swallow them.
+static esp_err_t save_to_nvs(void) {
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to open NVS: %s", esp_err_to_name(err));
-        return false;
+        return err;
     }
 
-    nvs_set_u8(nvs, NVS_KEY_WEB_ENABLED, state.web_auth_enabled ? 1 : 0);
-    nvs_set_u8(nvs, NVS_KEY_API_ENABLED, state.api_auth_enabled ? 1 : 0);
-    if (state.username[0] != '\0')
-        nvs_set_str(nvs, NVS_KEY_USERNAME, state.username);
-    if (state.password_set)
-        nvs_set_blob(nvs, NVS_KEY_PASS_HASH, state.password_hash, sizeof(state.password_hash));
-    else
-        nvs_erase_key(nvs, NVS_KEY_PASS_HASH);  // no-op if absent
-    if (state.user_password_set)
-        nvs_set_blob(nvs, NVS_KEY_USER_HASH, state.user_password_hash, sizeof(state.user_password_hash));
-    else
-        nvs_erase_key(nvs, NVS_KEY_USER_HASH);  // no-op if absent
-    if (state.api_key[0] != '\0')
-        nvs_set_str(nvs, NVS_KEY_API_KEY, state.api_key);
+    // erase_key returns ESP_ERR_NVS_NOT_FOUND when the key is absent — that is a
+    // benign no-op, not a failure, so it is excluded from the error accumulator.
+    esp_err_t e = ESP_OK;
+    auto acc = [&](esp_err_t r) { if (r != ESP_OK && e == ESP_OK) e = r; };
 
-    nvs_commit(nvs);
+    acc(nvs_set_u8(nvs, NVS_KEY_WEB_ENABLED, state.web_auth_enabled ? 1 : 0));
+    acc(nvs_set_u8(nvs, NVS_KEY_API_ENABLED, state.api_auth_enabled ? 1 : 0));
+    if (state.username[0] != '\0')
+        acc(nvs_set_str(nvs, NVS_KEY_USERNAME, state.username));
+    if (state.password_set)
+        acc(nvs_set_blob(nvs, NVS_KEY_PASS_HASH, state.password_hash, sizeof(state.password_hash)));
+    else {
+        esp_err_t r = nvs_erase_key(nvs, NVS_KEY_PASS_HASH);
+        if (r != ESP_ERR_NVS_NOT_FOUND) acc(r);
+    }
+    if (state.user_password_set)
+        acc(nvs_set_blob(nvs, NVS_KEY_USER_HASH, state.user_password_hash, sizeof(state.user_password_hash)));
+    else {
+        esp_err_t r = nvs_erase_key(nvs, NVS_KEY_USER_HASH);
+        if (r != ESP_ERR_NVS_NOT_FOUND) acc(r);
+    }
+    if (state.api_key[0] != '\0')
+        acc(nvs_set_str(nvs, NVS_KEY_API_KEY, state.api_key));
+
+    acc(nvs_commit(nvs));
     nvs_close(nvs);
-    return true;
+    if (e != ESP_OK) ESP_LOGE(TAG, "auth NVS save failed: %s", esp_err_to_name(e));
+    return e;
 }
 
 static session_t* find_session(const char* token) {
@@ -144,17 +159,24 @@ static session_t* find_session(const char* token) {
     return NULL;
 }
 
-static session_t* find_free_session(void) {
+// Find a slot for a new session of @p new_role. A free slot is always preferred;
+// otherwise the oldest evictable session is reclaimed. A climate-only USER login
+// must never evict an ADMIN session — doing so could knock the only admin out
+// while the admin password is forgotten (a lockout vector), so user logins only
+// reclaim other user slots and are refused when none are available.
+static session_t* find_free_session(auth_role_t new_role) {
     session_t* oldest = NULL;
     time_t oldest_time = 0;
     for (int i = 0; i < AUTH_MAX_SESSIONS; i++) {
         if (!state.sessions[i].active) return &state.sessions[i];
-        if (oldest == NULL || state.sessions[i].last_used < oldest_time) {
+        bool evictable = (new_role == AUTH_ROLE_ADMIN) ||
+                         (state.sessions[i].role != AUTH_ROLE_ADMIN);
+        if (evictable && (oldest == NULL || state.sessions[i].last_used < oldest_time)) {
             oldest = &state.sessions[i];
             oldest_time = state.sessions[i].last_used;
         }
     }
-    if (oldest != NULL) {  // all slots full → evict oldest
+    if (oldest != NULL) {  // all slots full → evict oldest evictable session
         oldest->active = false;
         return oldest;
     }
@@ -201,6 +223,16 @@ void auth_mgr_init(void) {
         save_to_nvs();
     }
 
+    // Startup invariant repair (lockout guard of last resort): web auth must
+    // never be enabled without an admin password to log in with. A partial NVS
+    // write, corruption, or a future code path could persist that impossible
+    // state; self-heal it here so a device always boots into a reachable UI.
+    if (state.web_auth_enabled && !state.password_set) {
+        ESP_LOGW(TAG, "web auth enabled with no admin password — disabling to avoid lockout");
+        state.web_auth_enabled = false;
+        save_to_nvs();
+    }
+
     state.initialized = true;
     ESP_LOGI(TAG, "auth ready — web_auth=%s api_auth=%s",
              state.web_auth_enabled ? "on" : "off",
@@ -211,12 +243,20 @@ void auth_mgr_init(void) {
 
 bool auth_mgr_web_auth_enabled(void) { return state.web_auth_enabled; }
 
-void auth_mgr_set_web_auth_enabled(bool enabled) {
-    if (state.web_auth_enabled == enabled) return;
+bool auth_mgr_set_web_auth_enabled(bool enabled) {
+    // Enforce the core invariant at the manager layer, not just in the HTTP
+    // handler: never enable web auth without an admin password, or the UI locks
+    // out with no recovery. This makes the guard hold for every caller.
+    if (enabled && !state.password_set) {
+        ESP_LOGW(TAG, "refused to enable web auth: no admin password set");
+        return false;
+    }
+    if (state.web_auth_enabled == enabled) return true;
     state.web_auth_enabled = enabled;
     save_to_nvs();
     if (!enabled) auth_mgr_logout_all();
     ESP_LOGI(TAG, "web auth %s", enabled ? "enabled" : "disabled");
+    return true;
 }
 
 bool auth_mgr_set_admin_password(const char* password) {
@@ -280,7 +320,7 @@ auth_role_t auth_mgr_login(const char* password, char* session_token) {
         role = AUTH_ROLE_USER;
     if (role == AUTH_ROLE_NONE) return AUTH_ROLE_NONE;
 
-    session_t* session = find_free_session();
+    session_t* session = find_free_session(role);
     if (session == NULL) return AUTH_ROLE_NONE;
 
     session->active = true;
