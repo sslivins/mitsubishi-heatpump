@@ -34,6 +34,9 @@ bool is_connected();
 const char* get_ip();
 const char* get_ap_name();
 
+/// Live RSSI (dBm) of the current association, or 0 when not connected.
+int get_rssi();
+
 /// SSID the device is configured to join (empty in out-of-box / provisioning).
 const char* get_ssid();
 

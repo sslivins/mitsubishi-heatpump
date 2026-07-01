@@ -312,6 +312,16 @@ const char* get_ssid() { return s_ssid; }
 bool has_password() { return s_pass[0] != '\0'; }
 const char* get_password() { return s_pass; }
 
+// Live RSSI (dBm) of the current STA association, or 0 when not connected.
+// Queries the driver each call so callers see the current signal, not the
+// value captured at connect time.
+int get_rssi() {
+    if (s_mode != Mode::CONNECTED) return 0;
+    wifi_ap_record_t ap = {};
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return 0;
+    return ap.rssi;
+}
+
 esp_err_t save_credentials(const char* ssid, const char* pass) {
     nvs_handle_t h;
     esp_err_t err = nvs_open(kNvsNs, NVS_READWRITE, &h);

@@ -267,6 +267,7 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
     <div class="grid">
       <div class="stat"><div class="k">Network</div><div class="v" id="wifiSsid">--</div></div>
       <div class="stat"><div class="k">Status</div><div class="v" id="wifiStat">--</div></div>
+      <div class="stat"><div class="k">Signal</div><div class="v" id="wifiRssi">--</div></div>
     </div>
     <div class="mqf"><label>Network (SSID)</label>
       <input type="text" id="wfSsid" autocomplete="off" placeholder="SSID"></div>
@@ -433,6 +434,14 @@ function fmtUptime(s){
   if(d)return `${d}d ${h}h`;if(h)return `${h}h ${m}m`;return `${m}m`;
 }
 
+// RSSI (dBm) -> "-72 dBm · Fair". 0/undefined means not connected/unknown.
+function fmtRssi(r){
+  if(r==null||r===0)return '--';
+  let q='Very weak';
+  if(r>=-60)q='Excellent';else if(r>=-67)q='Good';else if(r>=-75)q='Fair';else if(r>=-80)q='Weak';
+  return `${r} dBm · ${q}`;
+}
+
 async function refresh(){
   try{
     const r=await jget('/api/status');
@@ -448,6 +457,7 @@ async function refresh(){
     $('hdrver').textContent='firmware v'+s.version;
     $('ver').textContent=s.version;
     $('ip').textContent=s.ip;
+    $('wifiRssi').textContent=fmtRssi(s.rssi);
     $('uptime').textContent=fmtUptime(s.uptime_s);
     $('heap').textContent=(s.free_heap/1024|0)+' KB';
     const p=s.power||{};

@@ -183,6 +183,7 @@ esp_err_t handle_status(httpd_req_t* req) {
     cJSON_AddStringToObject(root, "version", app->version);
     cJSON_AddStringToObject(root, "hostname", wifi::mdns_hostname().c_str());
     cJSON_AddStringToObject(root, "ip", wifi::get_ip());
+    cJSON_AddNumberToObject(root, "rssi", wifi::get_rssi());
     cJSON_AddBoolToObject(root, "unit_connected",
                           s_hooks.unit_connected && s_hooks.unit_connected());
     cJSON_AddBoolToObject(root, "mqtt_connected",
