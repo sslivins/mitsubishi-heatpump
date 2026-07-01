@@ -589,6 +589,20 @@ esp_err_t handle_wifi_get(httpd_req_t* req) {
     return ESP_OK;
 }
 
+// ── GET /api/scan — scan nearby WiFi networks (admin only) ────────────
+esp_err_t handle_scan(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    std::string json;
+    if (wifi::scan_json(json) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "scan failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json.c_str());
+    return ESP_OK;
+}
+
 // ── POST /api/wifi — set network credentials to NVS, then reboot ───────
 esp_err_t handle_wifi_post(httpd_req_t* req) {
     set_cors(req);
@@ -860,6 +874,7 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/mqtt",                HTTP_GET,      handle_mqtt_get,       nullptr},
         {"/api/mqtt",                HTTP_POST,     handle_mqtt_post,      nullptr},
         {"/api/wifi",                HTTP_GET,      handle_wifi_get,       nullptr},
+        {"/api/scan",                HTTP_GET,      handle_scan,           nullptr},
         {"/api/wifi",                HTTP_POST,     handle_wifi_post,      nullptr},
         {"/api/system/restart",      HTTP_POST,    handle_restart,        nullptr},
         {"/api/system/factory_reset",HTTP_POST,    handle_factory_reset,  nullptr},

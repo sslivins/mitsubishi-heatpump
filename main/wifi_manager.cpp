@@ -6,6 +6,9 @@
 
 #include <cstring>
 #include <cstdio>
+#include <vector>
+#include <string>
+#include <algorithm>
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -127,25 +130,11 @@ esp_err_t captive_redirect(httpd_req_t* req) {
 
 // GET /api/scan — blocking scan, returns [{ssid,rssi,auth}].
 esp_err_t portal_scan(httpd_req_t* req) {
-    wifi_scan_config_t scan_cfg = {};
-    esp_wifi_scan_start(&scan_cfg, true);
-    s_scan_count = sizeof(s_scan) / sizeof(s_scan[0]);
-    esp_wifi_scan_get_ap_records(&s_scan_count, s_scan);
-
-    cJSON* arr = cJSON_CreateArray();
-    for (int i = 0; i < s_scan_count; i++) {
-        cJSON* o = cJSON_CreateObject();
-        cJSON_AddStringToObject(o, "ssid", (char*)s_scan[i].ssid);
-        cJSON_AddNumberToObject(o, "rssi", s_scan[i].rssi);
-        cJSON_AddNumberToObject(o, "auth", s_scan[i].authmode);
-        cJSON_AddItemToArray(arr, o);
-    }
-    char* str = cJSON_PrintUnformatted(arr);
+    std::string json;
+    if (scan_json(json) != ESP_OK) json = "[]";
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_sendstr(req, str);
-    cJSON_free(str);
-    cJSON_Delete(arr);
+    httpd_resp_sendstr(req, json.c_str());
     return ESP_OK;
 }
 
@@ -320,6 +309,47 @@ int get_rssi() {
     wifi_ap_record_t ap = {};
     if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return 0;
     return ap.rssi;
+}
+
+esp_err_t scan_json(std::string& out) {
+    wifi_scan_config_t scan_cfg = {};
+    esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);  // blocking
+    if (err != ESP_OK) return err;
+    s_scan_count = sizeof(s_scan) / sizeof(s_scan[0]);
+    esp_wifi_scan_get_ap_records(&s_scan_count, s_scan);
+
+    // Dedup by SSID keeping the strongest record, drop hidden/empty, sort desc.
+    struct Net { std::string ssid; int8_t rssi; uint8_t auth; };
+    std::vector<Net> nets;
+    for (int i = 0; i < s_scan_count; i++) {
+        const char* ssid = reinterpret_cast<const char*>(s_scan[i].ssid);
+        if (ssid[0] == '\0') continue;
+        auto it = std::find_if(nets.begin(), nets.end(),
+                               [&](const Net& n) { return n.ssid == ssid; });
+        if (it == nets.end()) {
+            nets.push_back({ssid, s_scan[i].rssi,
+                            static_cast<uint8_t>(s_scan[i].authmode)});
+        } else if (s_scan[i].rssi > it->rssi) {
+            it->rssi = s_scan[i].rssi;
+            it->auth = static_cast<uint8_t>(s_scan[i].authmode);
+        }
+    }
+    std::sort(nets.begin(), nets.end(),
+              [](const Net& a, const Net& b) { return a.rssi > b.rssi; });
+
+    cJSON* arr = cJSON_CreateArray();
+    for (const auto& n : nets) {
+        cJSON* o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "ssid", n.ssid.c_str());
+        cJSON_AddNumberToObject(o, "rssi", n.rssi);
+        cJSON_AddNumberToObject(o, "auth", n.auth);
+        cJSON_AddItemToArray(arr, o);
+    }
+    char* str = cJSON_PrintUnformatted(arr);
+    out = str ? str : "[]";
+    cJSON_free(str);
+    cJSON_Delete(arr);
+    return ESP_OK;
 }
 
 esp_err_t save_credentials(const char* ssid, const char* pass) {
