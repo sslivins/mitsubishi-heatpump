@@ -45,7 +45,10 @@ void auth_mgr_init(void);
 // ── Web authentication (password + session cookie) ─────────────────────────
 
 bool auth_mgr_web_auth_enabled(void);
-void auth_mgr_set_web_auth_enabled(bool enabled);
+/// Enable/disable web auth. Refuses to enable (returns false) when no admin
+/// password is set — enabling without a password would lock the UI out with no
+/// recovery. Returns true when the requested state is in effect.
+bool auth_mgr_set_web_auth_enabled(bool enabled);
 
 /// Set the admin password (hashed with SHA-256). The admin username is fixed
 /// to "admin" and cannot be changed. All sessions are invalidated on change.

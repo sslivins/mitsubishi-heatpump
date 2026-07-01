@@ -728,6 +728,7 @@ esp_err_t handle_auth_post(httpd_req_t* req) {
     }
 
     const cJSON* v;
+    bool admin_pw_provided = false;
     // Admin password first, so enabling web auth in the same request uses it.
     if ((v = cJSON_GetObjectItem(json, "password")) && cJSON_IsString(v) &&
         v->valuestring[0] != '\0') {
@@ -738,6 +739,7 @@ esp_err_t handle_auth_post(httpd_req_t* req) {
             return httpd_resp_sendstr(req,
                 "{\"error\":\"Admin password must differ from the user password\"}");
         }
+        admin_pw_provided = true;
     }
 
     // Climate-only "user" account: set its password, or remove it.
@@ -756,19 +758,29 @@ esp_err_t handle_auth_post(httpd_req_t* req) {
 
     if ((v = cJSON_GetObjectItem(json, "web_auth_enabled")) && cJSON_IsBool(v)) {
         bool want_web = cJSON_IsTrue(v);
-        // Never allow requiring web login without an admin password — that would
-        // lock the UI out. The password above is applied first, so one set in
-        // this same request counts.
-        if (want_web && !auth_mgr_web_password_set()) {
+        bool was_web = auth_mgr_web_auth_enabled();
+        // Turning login ON from OFF requires a freshly-typed admin password in
+        // this same request — not merely a password that happens to already be
+        // stored (which the user may have set long ago and forgotten). This
+        // closes the "flip login on with a blank field" lockout vector.
+        if (want_web && !was_web && !admin_pw_provided) {
             cJSON_Delete(json);
             httpd_resp_set_status(req, "400 Bad Request");
             httpd_resp_set_type(req, "application/json");
-            set_cors(req);
+            httpd_resp_sendstr(req,
+                "{\"error\":\"Enter an administrator password to enable login\"}");
+            return ESP_FAIL;
+        }
+        // auth_mgr enforces the "no password → can't enable" invariant too and
+        // returns false if violated (defence in depth against a bad state).
+        if (!auth_mgr_set_web_auth_enabled(want_web)) {
+            cJSON_Delete(json);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "application/json");
             httpd_resp_sendstr(req,
                 "{\"error\":\"Set a web-UI password before requiring login\"}");
             return ESP_FAIL;
         }
-        auth_mgr_set_web_auth_enabled(want_web);
     }
     if ((v = cJSON_GetObjectItem(json, "api_auth_enabled")) && cJSON_IsBool(v))
         auth_mgr_set_api_auth_enabled(cJSON_IsTrue(v));
