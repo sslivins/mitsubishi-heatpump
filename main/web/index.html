@@ -96,6 +96,11 @@ border-radius:8px;padding:8px 10px;margin-bottom:14px}
 .wf-bars{display:inline-flex;align-items:flex-end;gap:2px;height:14px}
 .wf-bars i{width:3px;background:#30363d;border-radius:1px}
 .wf-bars i.on{background:#8b949e}
+.wf-cur{margin-top:4px;border:1px solid #21262d;border-radius:8px}
+.wf-cur .ss{flex-direction:column;align-items:flex-start;gap:2px;display:flex}
+.wf-cur .ss-name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wf-sub{font-size:.75em;color:#8b949e}
+.wf-sub.ok{color:#3fb950}
 .wf-join{margin-top:12px;border-top:1px solid #21262d;padding-top:12px}
 .tabs{display:flex;gap:3px;margin-bottom:14px;background:#161b22;border:1px solid #21262d;
 border-radius:10px;padding:4px}
@@ -281,13 +286,9 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
 
   <div class="card" data-grp="network">
     <h2>WiFi</h2>
-    <div class="grid">
-      <div class="stat"><div class="k">Network</div><div class="v" id="wifiSsid">--</div></div>
-      <div class="stat"><div class="k">Status</div><div class="v" id="wifiStat">--</div></div>
-      <div class="stat"><div class="k">Signal</div><div class="v" id="wifiRssi">--</div></div>
-    </div>
+    <div id="wfCurrent"></div>
     <div class="wf-head">
-      <span class="wf-head-t">Available networks</span>
+      <span class="wf-head-t">Other networks</span>
       <button class="btn-link" id="wfScanBtn" onclick="scanWifi(true)">Rescan</button>
     </div>
     <div id="wfList" class="wf-list"><div class="wf-empty">Scanning…</div></div>
@@ -465,14 +466,6 @@ function fmtUptime(s){
   if(d)return `${d}d ${h}h`;if(h)return `${h}h ${m}m`;return `${m}m`;
 }
 
-// RSSI (dBm) -> "-72 dBm · Fair". 0/undefined means not connected/unknown.
-function fmtRssi(r){
-  if(r==null||r===0)return '--';
-  let q='Very weak';
-  if(r>=-60)q='Excellent';else if(r>=-67)q='Good';else if(r>=-75)q='Fair';else if(r>=-80)q='Weak';
-  return `${r} dBm · ${q}`;
-}
-
 async function refresh(){
   try{
     const r=await jget('/api/status');
@@ -488,7 +481,7 @@ async function refresh(){
     $('hdrver').textContent='firmware v'+s.version;
     $('ver').textContent=s.version;
     $('ip').textContent=s.ip;
-    $('wifiRssi').textContent=fmtRssi(s.rssi);
+    curRssi=s.rssi; renderCurrent();
     $('uptime').textContent=fmtUptime(s.uptime_s);
     $('heap').textContent=(s.free_heap/1024|0)+' KB';
     const p=s.power||{};
@@ -784,15 +777,23 @@ async function saveMqtt(){
 // ── WiFi settings ──────────────────────────────────────────────────────
 function wfMsg(m,cls){const el=$('wfMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
 
-let wfCurSsid='';       // SSID the device is currently joined to (for the ✓ marker)
-let netTabActive=false; // whether the Network tab is showing (drives auto-rescan)
+let wfCurSsid='';        // SSID the device is currently joined to / has saved
+let wifiConnected=false; // whether the STA is actually associated
+let wifiMode='';         // connected | connecting | provisioning | idle
+let curAuth=-1;          // auth mode of the current network (0=open, -1=unknown)
+let curRssi=0;           // live RSSI of the current association (dBm), 0=n/a
+let wifiInfoKnown=false; // set once /api/wifi has returned (avoids first-load flicker)
+let netTabActive=false;  // whether the Network tab is showing (drives auto-rescan)
 
 async function loadWifi(){
   try{
     const w=await (await jget('/api/wifi')).json();
     wfCurSsid=w.ssid||'';
-    $('wifiSsid').textContent=w.ssid||'(not set)';
-    $('wifiStat').textContent=w.mode||'--';
+    wifiConnected=!!w.connected;
+    wifiMode=w.mode||'';
+    curAuth=(typeof w.auth==='number')?w.auth:-1;
+    wifiInfoKnown=true;
+    renderCurrent();
   }catch(e){}
 }
 
@@ -802,6 +803,40 @@ function barsHtml(r){
   const n=rssiBars(r);let h='<span class="wf-bars">';
   for(let i=1;i<=4;i++){h+=`<i class="${i<=n?'on':''}" style="height:${3+i*3}px"></i>`;}
   return h+'</span>';
+}
+
+// Render the single "current connection" row (iPhone-style) driven by the
+// combined /api/wifi + /api/status state. Tapping it re-opens the join panel
+// for the saved network so a password can be repaired without "Forget".
+function renderCurrent(){
+  const el=$('wfCurrent'); if(!el) return;
+  if(!wifiInfoKnown){
+    el.innerHTML='<div class="wf-row wf-cur"><span class="ss"><span class="ss-name">…</span></span></div>';
+    return;
+  }
+  const row=document.createElement('div');
+  row.className='wf-row wf-cur'+(wifiConnected?' cur':'');
+  const ss=document.createElement('span'); ss.className='ss';
+  const name=document.createElement('span'); name.className='ss-name';
+  const sub=document.createElement('span'); sub.className='wf-sub';
+  const meta=document.createElement('span'); meta.className='meta';
+  if(wfCurSsid){
+    name.textContent=(wifiConnected?'✓ ':'')+wfCurSsid;
+    if(wifiConnected){
+      sub.textContent='Connected'; sub.classList.add('ok');
+      meta.innerHTML=(curAuth!==0?'<span title="secured">🔒</span>':'')+barsHtml(curRssi);
+    }else if(wifiMode==='connecting'){ sub.textContent='Connecting…'; }
+    else { sub.textContent='Not connected'; }
+    row.style.cursor='pointer';
+    row.onclick=()=>pickWifi(wfCurSsid,curAuth);
+  }else{
+    name.textContent=(wifiMode==='provisioning')?'Setup mode':'Not connected';
+    sub.textContent=(wifiMode==='provisioning')?'Broadcasting setup Wi-Fi':'No network configured';
+    row.style.cursor='default';
+  }
+  ss.appendChild(name); if(sub.textContent) ss.appendChild(sub);
+  row.appendChild(ss); row.appendChild(meta);
+  el.innerHTML=''; el.appendChild(row);
 }
 
 async function scanWifi(manual){
@@ -818,12 +853,14 @@ async function scanWifi(manual){
 
 function renderWifiList(nets){
   const el=$('wfList'); el.innerHTML='';
-  if(!nets||!nets.length){ el.innerHTML='<div class="wf-empty">No networks found</div>'; return; }
-  nets.forEach(n=>{
+  // The current/saved network is shown in its own row above, so drop it here.
+  const others=(nets||[]).filter(n=>!(wfCurSsid && n.ssid===wfCurSsid));
+  if(!others.length){ el.innerHTML='<div class="wf-empty">No other networks found</div>'; return; }
+  others.forEach(n=>{
     const row=document.createElement('div');
-    row.className='wf-row'+(n.ssid===wfCurSsid?' cur':'');
+    row.className='wf-row';
     const ss=document.createElement('span'); ss.className='ss';
-    ss.textContent=(n.ssid===wfCurSsid?'✓ ':'')+n.ssid;
+    ss.textContent=n.ssid;
     const meta=document.createElement('span'); meta.className='meta';
     meta.innerHTML=(n.auth!==0?'<span title="secured">🔒</span>':'')+barsHtml(n.rssi);
     row.appendChild(ss); row.appendChild(meta);

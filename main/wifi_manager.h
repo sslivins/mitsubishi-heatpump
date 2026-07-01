@@ -37,6 +37,10 @@ const char* get_ap_name();
 /// Live RSSI (dBm) of the current association, or 0 when not connected.
 int get_rssi();
 
+/// Auth mode of the current association as a wifi_auth_mode_t int
+/// (0 == WIFI_AUTH_OPEN), or -1 when not connected.
+int get_auth();
+
 /// SSID the device is configured to join (empty in out-of-box / provisioning).
 const char* get_ssid();
 
