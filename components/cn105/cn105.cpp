@@ -39,6 +39,8 @@ static constexpr int      INFOMODE_LEN          = 6;
 static constexpr uint32_t PACKET_SENT_INTERVAL_MS = 1000;
 static constexpr uint32_t PACKET_INFO_INTERVAL_MS = 2000;
 static constexpr uint32_t RECV_TIMEOUT_MS       = 10000;   // reconnect if silent this long
+static constexpr uint32_t CONNECT_BACKOFF_MIN_MS = 1000;   // first reconnect interval
+static constexpr uint32_t CONNECT_BACKOFF_MAX_MS = 15000;  // cap on the reconnect interval
 static constexpr uint32_t AUTOUPDATE_GRACE_MS   = 30000;   // ignore external changes after a local one
 static constexpr int      PACKET_TYPE_DEFAULT   = 99;      // "cycle infoMode" sentinel
 static constexpr int      RQST_PKT_SETTINGS     = 0;       // index into INFOMODE
@@ -177,7 +179,9 @@ esp_err_t HeatPump::connect(uart_port_t port, int tx_gpio, int rx_gpio) {
     ESP_LOGI(TAG, "CN105 UART up @%d 8-E-1 (tx=%d rx=%d)", kBaud, tx_gpio, rx_gpio);
 
     vTaskDelay(pdMS_TO_TICKS(1000));  // let the line settle before the handshake
-    sendConnect_();                   // one attempt; pump() keeps retrying
+    connectBackoff_ = CONNECT_BACKOFF_MIN_MS;
+    lastConnectAttempt_ = now_ms();
+    sendConnect_();                   // one attempt; pump() keeps retrying (backed off)
     publishSnapshot_();
     return ESP_OK;
 }
@@ -196,11 +200,28 @@ void HeatPump::pump_() {
     statusChanged_   = false;
     uint32_t now = now_ms();
 
-    // (Re)connect when we have never connected or the unit has gone silent.
-    if (!connected_ || (now - lastRecv_ > RECV_TIMEOUT_MS)) {
-        if (canSend_(false)) {
-            firstRun_ = true;   // re-adopt the unit's state once it answers again
+    // Detect a dropped link (unit unplugged / powered off) so the UI and HA
+    // reflect it, and re-adopt the unit's state cleanly once it returns.
+    if (connected_ && (now - lastRecv_ > RECV_TIMEOUT_MS)) {
+        connected_ = false;
+        firstRun_  = true;
+        settingsChanged_ = true;  // notify listeners the unit went away
+        ESP_LOGW(TAG, "CN105 link lost (no packet for %ums)", (unsigned)RECV_TIMEOUT_MS);
+    }
+
+    // (Re)connect with exponential backoff while disconnected. Backoff grows on
+    // each failed handshake and is reset to the minimum the moment any valid
+    // packet arrives (see readPacket_), so a real reconnect stays snappy while
+    // an absent/dead unit doesn't get hammered once per second forever.
+    if (!connected_) {
+        if (now - lastConnectAttempt_ >= connectBackoff_) {
+            lastConnectAttempt_ = now;
             sendConnect_();
+            if (!connected_) {
+                connectBackoff_ = connectBackoff_ * 2;
+                if (connectBackoff_ > CONNECT_BACKOFF_MAX_MS)
+                    connectBackoff_ = CONNECT_BACKOFF_MAX_MS;
+            }
         }
         publishSnapshot_();
         fireCallbacks_();
@@ -396,6 +417,7 @@ int HeatPump::readPacket_(uint32_t start_to_ms) {
     if (data[dataLength] != checksum) return RCVD_PKT_FAIL;
 
     lastRecv_ = now_ms();
+    connectBackoff_ = CONNECT_BACKOFF_MIN_MS;  // valid traffic: recover fast next time
 
     // No lock is held here, so callbacks are safe to invoke directly.
     if (on_packet_) {
