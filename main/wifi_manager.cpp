@@ -21,6 +21,7 @@
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 
 #include "sdkconfig.h"
 
@@ -48,6 +49,48 @@ int   s_retries = 0;
 httpd_handle_t s_portal = nullptr;
 wifi_ap_record_t s_scan[20];
 uint16_t s_scan_count = 0;
+
+// User-settable display name (shown in the web UI/login/tab). Decoupled from
+// the mDNS hostname and MQTT friendly_name so renaming never breaks Home
+// Assistant discovery or .local addressing. Guarded by a mutex because the
+// httpd handlers that read it and the POST handler that writes it may run on
+// separate tasks.
+constexpr char kDeviceNvsNs[] = "device";
+SemaphoreHandle_t s_name_mtx = nullptr;
+std::string       s_name;
+
+void load_name() {
+    char buf[64] = {0};
+    nvs_handle_t h;
+    if (nvs_open(kDeviceNvsNs, NVS_READONLY, &h) == ESP_OK) {
+        size_t len = sizeof(buf);
+        if (nvs_get_str(h, "name", buf, &len) == ESP_OK) s_name = buf;
+        nvs_close(h);
+    }
+}
+
+// Trim, strip control characters, and cap to 32 bytes without splitting a
+// UTF-8 sequence. Centralised here so every setter (main UI + captive portal)
+// stores a consistently clean value.
+std::string sanitize_name(const char* in) {
+    std::string out;
+    for (const char* p = in ? in : ""; *p; ++p) {
+        unsigned char c = static_cast<unsigned char>(*p);
+        if (c < 0x20 || c == 0x7f) continue;  // drop control chars/newlines
+        out.push_back(*p);
+    }
+    size_t a = out.find_first_not_of(' ');
+    if (a == std::string::npos) return "";
+    size_t b = out.find_last_not_of(' ');
+    out = out.substr(a, b - a + 1);
+    constexpr size_t kMax = 32;
+    if (out.size() > kMax) {
+        size_t cut = kMax;
+        while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80) cut--;
+        out.resize(cut);
+    }
+    return out;
+}
 
 bool load_creds(char* ssid, size_t ssid_len, char* pass, size_t pass_len) {
     nvs_handle_t h;
@@ -161,6 +204,11 @@ esp_err_t portal_connect(httpd_req_t* req) {
     const char* ssid = jssid->valuestring;
     const char* pass = (jpass && cJSON_IsString(jpass)) ? jpass->valuestring : "";
 
+    // Optional friendly display name set during provisioning (sanitised in
+    // set_display_name). Handy first-set moment when onboarding many units.
+    cJSON* jname = cJSON_GetObjectItem(json, "name");
+    if (jname && cJSON_IsString(jname)) set_display_name(jname->valuestring);
+
     ESP_LOGI(TAG, "portal: saving creds for '%s' and rebooting", ssid);
     save_credentials(ssid, pass);
     cJSON_Delete(json);
@@ -244,8 +292,33 @@ std::string mdns_hostname() {
     return std::string(CONFIG_MDNS_HOSTNAME) + "-" + device_uid();
 }
 
+std::string device_display_name() {
+    if (!s_name_mtx) return s_name;  // pre-init (shouldn't happen post-boot)
+    xSemaphoreTake(s_name_mtx, portMAX_DELAY);
+    std::string copy = s_name;
+    xSemaphoreGive(s_name_mtx);
+    return copy;
+}
+
+esp_err_t set_display_name(const char* name) {
+    std::string n = sanitize_name(name);
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(kDeviceNvsNs, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, "name", n.c_str());
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) return err;  // keep the old cached value on failure
+    xSemaphoreTake(s_name_mtx, portMAX_DELAY);
+    s_name = n;
+    xSemaphoreGive(s_name_mtx);
+    return ESP_OK;
+}
+
 esp_err_t init() {
     s_events = xEventGroupCreate();
+    s_name_mtx = xSemaphoreCreateMutex();
+    load_name();
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 

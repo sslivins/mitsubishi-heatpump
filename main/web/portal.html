@@ -50,6 +50,9 @@ vertical-align:middle;margin-right:6px}
   <h1>Mitsubishi Heat Pump</h1>
   <p class="sub">WiFi Setup</p>
 
+  <label for="devname">Device name (optional)</label>
+  <input type="text" id="devname" maxlength="32" placeholder="e.g. Living Room" autocomplete="off" autocorrect="off" spellcheck="false">
+
   <button class="btn-scan" id="scanBtn" onclick="doScan()">Scan for Networks</button>
 
   <ul class="net-list hidden" id="netList"></ul>
@@ -141,7 +144,7 @@ async function doConnect(){
     await fetch('/api/connect',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ssid:selSSID,pass:pass})
+      body:JSON.stringify({ssid:selSSID,pass:pass,name:$('devname').value.trim()})
     });
     showStatus('Credentials saved! Device is rebooting.<br>Reconnect to your normal WiFi.','ok');
   }catch(e){

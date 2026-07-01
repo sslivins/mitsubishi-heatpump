@@ -25,6 +25,16 @@ std::string device_uid();
 /// mDNS hostname actually in use: "<CONFIG_MDNS_HOSTNAME>-<device_uid>".
 std::string mdns_hostname();
 
+/// User-settable display name shown in the web UI, login screen and browser
+/// tab. Empty when unset (callers fall back to the hostname / a default). This
+/// is purely cosmetic — it does NOT affect the mDNS hostname, SoftAP name, or
+/// MQTT friendly_name, so renaming never disturbs Home Assistant discovery.
+std::string device_display_name();
+
+/// Persist the display name to NVS and update the in-memory cache (no reboot).
+/// Pass "" to clear it back to the default. Returns ESP_OK on success.
+esp_err_t set_display_name(const char* name);
+
 /// Bring up WiFi. Returns ESP_OK once STA is connected with an IP, or
 /// ESP_ERR_NOT_FINISHED when it has fallen back to SoftAP provisioning.
 esp_err_t init();
