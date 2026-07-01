@@ -173,7 +173,8 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
 </button>
 <div class="overlay hidden" id="loginGate">
   <div class="card">
-    <h1>Mitsubishi Heat Pump</h1>
+    <h1 id="lgName">Mitsubishi Heat Pump</h1>
+    <p class="sub" id="lgHost" style="margin:-6px 0 12px"></p>
     <h2>Sign in</h2>
     <div class="mqf"><label>Password</label>
       <input type="password" id="lgPass" autocomplete="current-password"
@@ -183,7 +184,7 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
   </div>
 </div>
 <div class="wrap hidden" id="appWrap">
-  <h1>Mitsubishi Heat Pump</h1>
+  <h1 id="hdrName">Mitsubishi Heat Pump</h1>
   <div class="hver" id="hdrver">firmware v—</div>
   <p class="sub" id="subtitle">connecting…</p>
   <div id="offline" class="hidden" style="margin:8px auto;max-width:420px;padding:8px 12px;border-radius:8px;background:#5a1e1e;color:#ffd9d9;font-size:.8em">Connection lost — reconnecting…</div>
@@ -275,6 +276,15 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
   <div class="panel" id="panel-system">
   <div class="card" data-grp="system">
     <h2>System</h2>
+    <div class="mqf" data-admin>
+      <label>Web UI device name</label>
+      <input type="text" id="devName" maxlength="32" placeholder="e.g. Living Room"
+        autocomplete="off" autocorrect="off" spellcheck="false"
+        onfocus="nameEditing=true" onblur="nameEditing=false">
+      <div class="hint" style="font-size:.78em;opacity:.7;margin-top:4px">Shown on the login screen, page header, and browser tab. Does not change Wi-Fi, mDNS, SoftAP, MQTT, or Home Assistant names.</div>
+      <div id="devNameMsg" class="status hidden" style="margin:8px 0"></div>
+      <button class="btn" id="devNameBtn" onclick="saveDeviceName()" style="margin-top:6px">Save name</button>
+    </div>
     <div class="grid">
       <div class="stat"><div class="k">Firmware</div><div class="v" id="ver">--</div></div>
       <div class="stat"><div class="k">IP</div><div class="v" id="ip">--</div></div>
@@ -300,7 +310,7 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
         <input type="password" id="wfPass" autocomplete="new-password" placeholder=""></div>
       <div id="wfMsg" class="status hidden" style="margin:10px 0"></div>
       <button class="btn btn-warn" id="wfSaveBtn" onclick="saveWifi()">Connect &amp; reboot</button>
-      <button class="btn" onclick="closeJoin()">Cancel</button>
+      <button class="btn" onclick="closeJoin()" style="margin-top:8px">Cancel</button>
     </div>
 
     <button class="btn" id="wfOtherBtn" onclick="joinOther()" style="margin-top:10px">Other network…</button>
@@ -417,6 +427,7 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
 <script>
 function $(id){return document.getElementById(id)}
 let userEditing=false;
+let nameEditing=false;
 
 // ── Connectivity-aware fetch ───────────────────────────────────────────
 // Wrap every polled request with a timeout and a shared "reconnecting"
@@ -477,7 +488,10 @@ async function refresh(){
     badge($('bUnit'),s.unit_connected);
     badge($('bMqtt'),s.mqtt_connected);
     $('subtitle').textContent=s.hostname+' · '+s.ip;
-    document.title=s.hostname||'Mitsubishi Heat Pump';
+    const dn=(s.name&&s.name.trim())?s.name.trim():s.hostname;
+    $('hdrName').textContent=dn||'Mitsubishi Heat Pump';
+    document.title=dn||s.hostname||'Mitsubishi Heat Pump';
+    if(!nameEditing) $('devName').value=(s.name||'');
     $('hdrver').textContent='firmware v'+s.version;
     $('ver').textContent=s.version;
     $('ip').textContent=s.ip;
@@ -984,6 +998,12 @@ async function loadAuth(){
     authState.pwSet=!!a.web_password_set;
     authState.userSet=!!a.user_password_set;
     authState.role=a.role||'admin';
+    const lgdn=(a.name&&a.name.trim())?a.name.trim():a.hostname;
+    $('lgName').textContent=lgdn||'Mitsubishi Heat Pump';
+    $('lgHost').textContent=a.hostname||'';
+    $('hdrName').textContent=lgdn||'Mitsubishi Heat Pump';
+    document.title=lgdn||a.hostname||'Mitsubishi Heat Pump';
+    if(a.name!=null && !nameEditing) $('devName').value=a.name;
     if(a.web_auth_enabled && !a.authenticated){
       $('loginGate').classList.remove('hidden');
       $('lgPass').focus();
@@ -1018,6 +1038,31 @@ async function doLogin(){
 async function doLogout(){
   try{await fetch('/api/logout',{method:'POST'})}catch(e){}
   location.reload();
+}
+
+async function saveDeviceName(){
+  const btn=$('devNameBtn'), msg=$('devNameMsg');
+  const setMsg=(t,c)=>{msg.textContent=t;msg.className='status '+c;msg.classList.remove('hidden');};
+  btn.disabled=true; setMsg('Saving…','info');
+  try{
+    const r=await fetch('/api/device',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:$('devName').value.trim()})});
+    if(!r.ok){setMsg('Save failed','err');btn.disabled=false;return;}
+    const d=await r.json();
+    nameEditing=false;
+    $('devName').value=d.name||'';
+    const dn=(d.name&&d.name.trim())?d.name.trim():'';
+    // Header/title fall back to hostname when the name is cleared; refresh() will
+    // reconcile the hostname on its next tick, so use current header text as base.
+    const fallback=$('subtitle').textContent.split(' · ')[0]||'Mitsubishi Heat Pump';
+    $('hdrName').textContent=dn||fallback;
+    $('lgName').textContent=dn||fallback;
+    document.title=(dn||fallback);
+    setMsg('Saved','ok');
+    setTimeout(()=>msg.classList.add('hidden'),2000);
+  }catch(e){setMsg('Save failed','err');}
+  btn.disabled=false;
 }
 
 async function saveWebAccess(){

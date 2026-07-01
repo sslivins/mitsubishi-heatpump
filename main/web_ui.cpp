@@ -182,6 +182,7 @@ esp_err_t handle_status(httpd_req_t* req) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "version", app->version);
     cJSON_AddStringToObject(root, "hostname", wifi::mdns_hostname().c_str());
+    cJSON_AddStringToObject(root, "name", wifi::device_display_name().c_str());
     cJSON_AddStringToObject(root, "ip", wifi::get_ip());
     cJSON_AddNumberToObject(root, "rssi", wifi::get_rssi());
     cJSON_AddBoolToObject(root, "unit_connected",
@@ -565,7 +566,42 @@ esp_err_t handle_mqtt_post(httpd_req_t* req) {
     return ESP_OK;  // unreachable
 }
 
-// ── GET /api/wifi — current WiFi network (password never returned) ─────
+// ── POST /api/device — set the web-UI display name (admin only) ─────────
+// Independent of the MQTT friendly_name / mDNS hostname; shown on the login
+// screen, header, and browser tab so identical units are distinguishable.
+// Empty string clears it (falls back to hostname). No reboot required.
+esp_err_t handle_device_post(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    char* body = recv_body(req);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
+        return ESP_FAIL;
+    }
+    cJSON* json = cJSON_Parse(body);
+    free(body);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    const cJSON* v = cJSON_GetObjectItem(json, "name");
+    const char* name = (v && cJSON_IsString(v)) ? v->valuestring : "";
+    esp_err_t err = wifi::set_display_name(name);
+    cJSON_Delete(json);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS write failed");
+        return ESP_FAIL;
+    }
+    // Echo the canonical (sanitised) value so the UI can update in place.
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "name", wifi::device_display_name().c_str());
+    char* str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
 esp_err_t handle_wifi_get(httpd_req_t* req) {
     set_cors(req);
     REQUIRE_ADMIN(req);
@@ -710,6 +746,8 @@ esp_err_t handle_auth_get(httpd_req_t* req) {
     cJSON_AddBoolToObject(root, "web_auth_enabled", auth_mgr_web_auth_enabled());
     cJSON_AddBoolToObject(root, "api_auth_enabled", auth_mgr_api_auth_enabled());
     cJSON_AddStringToObject(root, "username", auth_mgr_get_username());
+    cJSON_AddStringToObject(root, "name", wifi::device_display_name().c_str());
+    cJSON_AddStringToObject(root, "hostname", wifi::mdns_hostname().c_str());
     cJSON_AddStringToObject(root, "role", rname);
     cJSON_AddBoolToObject(root, "web_password_set", auth_mgr_web_password_set());
     cJSON_AddBoolToObject(root, "user_password_set", auth_mgr_user_password_set());
@@ -874,6 +912,7 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/update/install",      HTTP_POST,    handle_update_install, nullptr},
         {"/api/mqtt",                HTTP_GET,      handle_mqtt_get,       nullptr},
         {"/api/mqtt",                HTTP_POST,     handle_mqtt_post,      nullptr},
+        {"/api/device",              HTTP_POST,     handle_device_post,    nullptr},
         {"/api/wifi",                HTTP_GET,      handle_wifi_get,       nullptr},
         {"/api/scan",                HTTP_GET,      handle_scan,           nullptr},
         {"/api/wifi",                HTTP_POST,     handle_wifi_post,      nullptr},
