@@ -49,6 +49,11 @@ const char* get_password();
 /// reboot afterwards.
 esp_err_t save_credentials(const char* ssid, const char* pass);
 
+/// Blocking scan (~2-4s) for nearby networks. Fills @p out with a JSON array
+/// string: [{"ssid":..,"rssi":..,"auth":..}] deduped by SSID (strongest kept),
+/// hidden/empty SSIDs dropped, sorted by RSSI descending.
+esp_err_t scan_json(std::string& out);
+
 /// Erase stored credentials so the next boot re-enters provisioning.
 esp_err_t erase_credentials();
 

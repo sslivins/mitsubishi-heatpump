@@ -80,6 +80,23 @@ border-radius:8px;padding:8px 10px;margin-bottom:14px}
 .status.err{background:#2a0d0d;color:#f85149}
 .dim{opacity:.5;pointer-events:none}
 .hidden{display:none!important}
+.wf-head{display:flex;justify-content:space-between;align-items:center;margin:14px 0 6px}
+.wf-head-t{font-size:.72em;color:#8b949e;text-transform:uppercase;letter-spacing:.05em}
+.btn-link{background:none;border:none;color:#58a6ff;cursor:pointer;font-size:.8em;padding:2px 4px;width:auto}
+.btn-link:hover{text-decoration:underline}
+.btn-link:disabled{color:#8b949e;cursor:default;text-decoration:none}
+.wf-list{border:1px solid #21262d;border-radius:8px;overflow:hidden}
+.wf-row{display:flex;align-items:center;gap:10px;padding:11px 12px;cursor:pointer;border-top:1px solid #21262d}
+.wf-row:first-child{border-top:none}
+.wf-row:hover{background:#161b22}
+.wf-row .ss{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wf-row.cur{color:#3fb950}
+.wf-row .meta{display:flex;align-items:center;gap:8px;color:#8b949e;font-size:.85em}
+.wf-empty{padding:12px;color:#8b949e;font-size:.85em;text-align:center}
+.wf-bars{display:inline-flex;align-items:flex-end;gap:2px;height:14px}
+.wf-bars i{width:3px;background:#30363d;border-radius:1px}
+.wf-bars i.on{background:#8b949e}
+.wf-join{margin-top:12px;border-top:1px solid #21262d;padding-top:12px}
 .tabs{display:flex;gap:3px;margin-bottom:14px;background:#161b22;border:1px solid #21262d;
 border-radius:10px;padding:4px}
 .tab{flex:1;min-width:0;text-align:center;padding:9px 3px;font-size:.76em;white-space:nowrap;color:#8b949e;border-radius:7px;
@@ -269,12 +286,23 @@ border-radius:20px;background:#21262d;color:#8b949e;border:1px solid #30363d}
       <div class="stat"><div class="k">Status</div><div class="v" id="wifiStat">--</div></div>
       <div class="stat"><div class="k">Signal</div><div class="v" id="wifiRssi">--</div></div>
     </div>
-    <div class="mqf"><label>Network (SSID)</label>
-      <input type="text" id="wfSsid" autocomplete="off" placeholder="SSID"></div>
-    <div class="mqf"><label>Password</label>
-      <input type="password" id="wfPass" autocomplete="new-password" placeholder=""></div>
-    <div id="wfMsg" class="status hidden" style="margin:10px 0"></div>
-    <button class="btn btn-warn" id="wfSaveBtn" onclick="saveWifi()">Save &amp; reconnect</button>
+    <div class="wf-head">
+      <span class="wf-head-t">Available networks</span>
+      <button class="btn-link" id="wfScanBtn" onclick="scanWifi(true)">Rescan</button>
+    </div>
+    <div id="wfList" class="wf-list"><div class="wf-empty">Scanning…</div></div>
+
+    <div id="wfJoin" class="wf-join hidden">
+      <div class="mqf"><label>Network (SSID)</label>
+        <input type="text" id="wfSsid" autocomplete="off" placeholder="SSID"></div>
+      <div class="mqf" id="wfPassRow"><label>Password</label>
+        <input type="password" id="wfPass" autocomplete="new-password" placeholder=""></div>
+      <div id="wfMsg" class="status hidden" style="margin:10px 0"></div>
+      <button class="btn btn-warn" id="wfSaveBtn" onclick="saveWifi()">Connect &amp; reboot</button>
+      <button class="btn" onclick="closeJoin()">Cancel</button>
+    </div>
+
+    <button class="btn" id="wfOtherBtn" onclick="joinOther()" style="margin-top:10px">Other network…</button>
     <button class="btn btn-danger" onclick="sysPost('/api/system/factory_reset','Erase WiFi credentials and reboot into setup mode?')">Forget WiFi &amp; reset</button>
   </div>
 
@@ -424,6 +452,9 @@ function showTab(name){
       c.style.display=(c.dataset.grp===name)?'':'none';
     });
   }
+  // Scan on entering the Network tab; the poll loop keeps it fresh while shown.
+  netTabActive=(name==='network');
+  if(netTabActive && authState.role==='admin'){ closeJoin(); scanWifi(true); }
 }
 
 function badge(el,on){el.className='badge '+(on?'on':'off')}
@@ -753,22 +784,89 @@ async function saveMqtt(){
 // ── WiFi settings ──────────────────────────────────────────────────────
 function wfMsg(m,cls){const el=$('wfMsg');el.className='status '+cls;el.textContent=m;el.classList.remove('hidden')}
 
+let wfCurSsid='';       // SSID the device is currently joined to (for the ✓ marker)
+let netTabActive=false; // whether the Network tab is showing (drives auto-rescan)
+
 async function loadWifi(){
   try{
     const w=await (await jget('/api/wifi')).json();
+    wfCurSsid=w.ssid||'';
     $('wifiSsid').textContent=w.ssid||'(not set)';
     $('wifiStat').textContent=w.mode||'--';
-    $('wfPass').placeholder=w.password_set?'••••••••':'None set';
-    if(document.activeElement!==$('wfSsid')) $('wfSsid').value=w.ssid||'';
   }catch(e){}
 }
+
+// RSSI (dBm) -> 1..4 signal bars.
+function rssiBars(r){ if(r>=-60)return 4; if(r>=-70)return 3; if(r>=-78)return 2; return 1; }
+function barsHtml(r){
+  const n=rssiBars(r);let h='<span class="wf-bars">';
+  for(let i=1;i<=4;i++){h+=`<i class="${i<=n?'on':''}" style="height:${3+i*3}px"></i>`;}
+  return h+'</span>';
+}
+
+async function scanWifi(manual){
+  const btn=$('wfScanBtn'); if(btn) btn.disabled=true;
+  if(manual) $('wfList').innerHTML='<div class="wf-empty">Scanning…</div>';
+  try{
+    const r=await jget('/api/scan');
+    if(r.status===401){ $('loginGate').classList.remove('hidden'); return; }
+    renderWifiList(await r.json());
+  }catch(e){
+    $('wfList').innerHTML='<div class="wf-empty">Scan failed — tap Rescan</div>';
+  }finally{ if(btn) btn.disabled=false; }
+}
+
+function renderWifiList(nets){
+  const el=$('wfList'); el.innerHTML='';
+  if(!nets||!nets.length){ el.innerHTML='<div class="wf-empty">No networks found</div>'; return; }
+  nets.forEach(n=>{
+    const row=document.createElement('div');
+    row.className='wf-row'+(n.ssid===wfCurSsid?' cur':'');
+    const ss=document.createElement('span'); ss.className='ss';
+    ss.textContent=(n.ssid===wfCurSsid?'✓ ':'')+n.ssid;
+    const meta=document.createElement('span'); meta.className='meta';
+    meta.innerHTML=(n.auth!==0?'<span title="secured">🔒</span>':'')+barsHtml(n.rssi);
+    row.appendChild(ss); row.appendChild(meta);
+    row.onclick=()=>pickWifi(n.ssid,n.auth);
+    el.appendChild(row);
+  });
+}
+
+// Open the join panel for a scanned network (SSID locked, password shown only
+// when the network is secured).
+function pickWifi(ssid,auth){
+  $('wfSsid').value=ssid; $('wfSsid').readOnly=true;
+  const secured=auth!==0;
+  $('wfPassRow').classList.toggle('hidden',!secured);
+  $('wfPass').value='';
+  $('wfMsg').classList.add('hidden');
+  $('wfSaveBtn').disabled=false;
+  $('wfJoin').classList.remove('hidden');
+  if(secured) setTimeout(()=>$('wfPass').focus(),50);
+}
+
+// Manual entry for hidden networks.
+function joinOther(){
+  $('wfSsid').value=''; $('wfSsid').readOnly=false;
+  $('wfPassRow').classList.remove('hidden');
+  $('wfPass').value='';
+  $('wfMsg').classList.add('hidden');
+  $('wfSaveBtn').disabled=false;
+  $('wfJoin').classList.remove('hidden');
+  setTimeout(()=>$('wfSsid').focus(),50);
+}
+function closeJoin(){ $('wfJoin').classList.add('hidden'); }
 
 async function saveWifi(){
   const ssid=$('wfSsid').value.trim();
   if(!ssid){wfMsg('Network (SSID) is required','err');return}
-  if(!confirm('Save WiFi settings and reconnect? The device will reboot.'))return;
-  const body={ssid};
+  const secured=!$('wfPassRow').classList.contains('hidden');
   const pw=$('wfPass').value;
+  // A newly-selected secured network needs a password — the device can only
+  // reuse a stored key when reconnecting to the network it's already on.
+  if(secured && !pw && ssid!==wfCurSsid){wfMsg('Password required for this network','err');return}
+  if(!confirm('Join "'+ssid+'"? The device will reboot to reconnect.'))return;
+  const body={ssid};
   if(pw) body.password=pw;
   $('wfSaveBtn').disabled=true;
   wfMsg('Saving — device will reboot…','info');
@@ -974,6 +1072,7 @@ async function pollOnce(){
   await refresh();
   if(authState.role!=='admin'){ tickN++; return; }  // user role: climate only
   if(tickN%3===0) await loadWifi();
+  if(netTabActive && tickN%6===0 && $('wfJoin').classList.contains('hidden')) await scanWifi(false);
   if(tickN%6===0){ await refreshUpdate(); await loadMqtt(); }
   tickN++;
 }
