@@ -475,6 +475,14 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
       <div class="stat"><div class="k">Operating</div><div class="v" id="dgOp">--</div></div>
       <div class="stat"><div class="k">Compressor</div><div class="v" id="dgComp">--</div></div>
       <div class="stat"><div class="k">Unit room temp</div><div class="v" id="dgRoom">--</div></div>
+      <div class="stat"><div class="k">Outside temp</div><div class="v" id="dgOut">--</div></div>
+      <div class="stat"><div class="k">Input power</div><div class="v" id="dgPow">--</div></div>
+      <div class="stat"><div class="k">Energy</div><div class="v" id="dgEng">--</div></div>
+      <div class="stat"><div class="k">Runtime</div><div class="v" id="dgRun">--</div></div>
+      <div class="stat"><div class="k">Target humidity</div><div class="v" id="dgHum">--</div></div>
+      <div class="stat"><div class="k">Sub-mode</div><div class="v" id="dgSub">--</div></div>
+      <div class="stat"><div class="k">Fan stage</div><div class="v" id="dgStg">--</div></div>
+      <div class="stat"><div class="k">Error</div><div class="v" id="dgErr">--</div></div>
     </div>
   </div>
   </div><!-- /panel-system -->
@@ -582,6 +590,16 @@ async function refresh(){
       $('dgOp').textContent=conn?(c.operating?'yes':'no'):'--';
       $('dgComp').textContent=(conn&&c.compressorFrequency!=null)?(c.compressorFrequency+' Hz'):'--';
       $('dgRoom').textContent=(conn&&c.roomTemperature!=null&&c.roomTemperature>0)?(c.roomTemperature.toFixed(1)+' °C'):'--';
+      // Extended telemetry — each field only present in the payload when the
+      // unit actually reported it, so absence renders as "--".
+      $('dgOut').textContent=(conn&&c.outsideTemp!=null)?(c.outsideTemp.toFixed(1)+' °C'):'--';
+      $('dgPow').textContent=(conn&&c.inputPowerW!=null)?(c.inputPowerW+' W'):'--';
+      $('dgEng').textContent=(conn&&c.energyKwh!=null)?(c.energyKwh.toFixed(1)+' kWh'):'--';
+      $('dgRun').textContent=(conn&&c.runtimeHours!=null)?(Math.round(c.runtimeHours)+' h'):'--';
+      $('dgHum').textContent=(conn&&c.targetHumidity!=null)?(c.targetHumidity+' %'):'--';
+      $('dgSub').textContent=(conn&&c.subMode)?c.subMode:'--';
+      $('dgStg').textContent=(conn&&c.stage)?c.stage:'--';
+      $('dgErr').textContent=(conn&&c.errorCode)?c.errorCode:'--';
     }
   }catch(e){
     badge($('bWifi'),false);
