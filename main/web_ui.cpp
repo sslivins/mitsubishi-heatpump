@@ -578,6 +578,7 @@ esp_err_t handle_wifi_get(httpd_req_t* req) {
     cJSON_AddStringToObject(root, "ssid", wifi::get_ssid());
     cJSON_AddStringToObject(root, "mode", mode);
     cJSON_AddBoolToObject(root, "connected", wifi::is_connected());
+    cJSON_AddNumberToObject(root, "auth", wifi::get_auth());
     cJSON_AddStringToObject(root, "ip", wifi::get_ip());
     cJSON_AddStringToObject(root, "ap_name", wifi::get_ap_name());
     cJSON_AddBoolToObject(root, "password_set", wifi::has_password());

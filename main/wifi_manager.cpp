@@ -311,6 +311,13 @@ int get_rssi() {
     return ap.rssi;
 }
 
+int get_auth() {
+    if (s_mode != Mode::CONNECTED) return -1;
+    wifi_ap_record_t ap = {};
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return -1;
+    return ap.authmode;
+}
+
 esp_err_t scan_json(std::string& out) {
     wifi_scan_config_t scan_cfg = {};
     esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);  // blocking
