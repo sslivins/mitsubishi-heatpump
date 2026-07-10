@@ -103,18 +103,22 @@ void pmic_task(void*) {
             // Feed the sag/brownout early-warning tracker with effective input.
             diag::note_vin(snap.input_mv, gov.vin_floor_mv);
         }
-        // Push diagnostics to HA only when the sag count or record-low changes,
-        // so a healthy rail never spams the broker.
+        // Push diagnostics to HA on sag/record-low change, and at least every
+        // ~30 s so RSSI (which drifts continuously) stays fresh without spamming.
         {
             static uint32_t last_sags = UINT32_MAX;
             static uint16_t last_min  = UINT16_MAX;
+            static int      ticks     = 0;
             diag::Snapshot ds = diag::get();
-            if (ds.vin_sag_count != last_sags || ds.vin_min_mv != last_min) {
+            bool changed = (ds.vin_sag_count != last_sags) || (ds.vin_min_mv != last_min);
+            if (changed || (++ticks >= 30)) {
                 last_sags = ds.vin_sag_count;
                 last_min  = ds.vin_min_mv;
+                ticks     = 0;
                 if (hvac_mqtt::is_connected()) {
                     hvac_mqtt::publish_diag_state({ds.reset_reason, ds.brownout_count,
-                                                   ds.vin_sag_count, ds.vin_min_mv});
+                                                   ds.vin_sag_count, ds.vin_min_mv,
+                                                   wifi::get_rssi()});
                 }
             }
         }
@@ -273,7 +277,8 @@ extern "C" void app_main() {
         hvac_mqtt::publish_update_state(u.current_version, u.latest_version, u.release_url);
         diag::Snapshot ds = diag::get();
         hvac_mqtt::publish_diag_state({ds.reset_reason, ds.brownout_count,
-                                       ds.vin_sag_count, ds.vin_min_mv});
+                                       ds.vin_sag_count, ds.vin_min_mv,
+                                       wifi::get_rssi()});
     });
 
     // On-device web UI (REST + dashboard). Reuses on_mqtt_command so the web
