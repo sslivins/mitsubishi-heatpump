@@ -73,7 +73,7 @@ menu "Mitsubishi Heat Pump Controller"
             default 2
     endmenu
 
-    menu "M5PM1 PMIC (battery / charge governor)"
+    menu "M5PM1 PMIC (battery / charger)"
         config PMIC_I2C_SDA_PIN
             int "I2C SDA GPIO"
             default 48
@@ -83,28 +83,6 @@ menu "Mitsubishi Heat Pump Controller"
         config PMIC_I2C_SCL_PIN
             int "I2C SCL GPIO"
             default 47
-
-        config PMIC_CHARGE_GOVERNOR
-            bool "Enable closed-loop charge governor"
-            default y
-            help
-                Gate the LGS4056 CHG_EN based on VIN so the CN105 5V supply
-                stays within budget.
-
-        config PMIC_VIN_FLOOR_MV
-            int "Pause charging when VIN drops below (mV)"
-            default 4800
-            depends on PMIC_CHARGE_GOVERNOR
-
-        config PMIC_VIN_RESUME_MV
-            int "Resume charging when VIN rises above (mV)"
-            default 4950
-            depends on PMIC_CHARGE_GOVERNOR
-
-        config PMIC_VBAT_TARGET_MV
-            int "Stop charging at VBAT (mV)"
-            default 4150
-            depends on PMIC_CHARGE_GOVERNOR
     endmenu
 
 endmenu

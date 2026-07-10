@@ -82,7 +82,6 @@ esp_err_t PMIC::set_charge_enable(bool en) {
     if (en) cfg |= (1 << BIT_CHG_EN);
     else    cfg &= ~(1 << BIT_CHG_EN);
     err = write_reg8(REG_PWR_CFG, cfg);
-    if (err == ESP_OK) charging_ = en;
     return err;
 }
 
@@ -96,31 +95,5 @@ esp_err_t PMIC::set_batt_lvp_mv(uint16_t mv) {
 
 esp_err_t PMIC::feed_watchdog()                  { return write_reg8(REG_WDT_KEY, 0xA5); }
 esp_err_t PMIC::set_watchdog_seconds(uint8_t s)  { return write_reg8(REG_WDT_CNT, s); }
-
-esp_err_t PMIC::governor_tick(const GovernorConfig& cfg) {
-    if (!dev_) return ESP_ERR_INVALID_STATE;
-
-    uint16_t vin = 0, vbat = 0;
-    read_input_mv(vin);   // effective supply: max(5VIN, 5VINOUT)
-    read_vbat_mv(vbat);
-
-    bool want_charge = charging_;
-
-    if (vbat >= cfg.vbat_target_mv) {
-        want_charge = false;                 // battery full enough
-    } else if (vin < cfg.vin_floor_mv) {
-        want_charge = false;                 // input sagging — back off
-    } else if (vin >= cfg.vin_resume_mv) {
-        want_charge = true;                  // healthy input — top up
-    }
-    // Hysteresis band (floor..resume) leaves the state unchanged.
-
-    if (want_charge != charging_) {
-        ESP_LOGI(TAG, "governor: charge %s (vin=%umV vbat=%umV)",
-                 want_charge ? "ON" : "OFF", vin, vbat);
-        return set_charge_enable(want_charge);
-    }
-    return ESP_OK;
-}
 
 }  // namespace m5pm1

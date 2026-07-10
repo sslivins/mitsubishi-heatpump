@@ -8,9 +8,8 @@
 ///
 /// Charge CURRENT is fixed in hardware by the LGS4056 PROG resistor network
 /// (200 mA float / 650 mA when PY_G3_CHG_PROG is pulled low) and is NOT
-/// settable over I2C. The firmware lever is CHG_EN (on/off). To keep the
-/// CN105 5V supply within budget we gate CHG_EN closed-loop on the VIN reading
-/// — see governor_tick().
+/// settable over I2C. The firmware lever is CHG_EN (on/off); we assert it once
+/// at boot and let the LGS4056 run its own CC/CV charge cycle and termination.
 ///
 /// Register map: https://github.com/m5stack/M5PM1 (src/M5PM1.h)
 
@@ -53,14 +52,6 @@ enum PwrCfgBit : uint8_t {
 
 enum class PowerSource : uint8_t { VIN = 0, VIN_OUT = 1, BATTERY = 2, UNKNOWN = 0xFF };
 
-/// Closed-loop charge-governor configuration.
-struct GovernorConfig {
-    uint16_t vin_floor_mv   = 4800; ///< pause charging if VIN sags below this
-    uint16_t vin_resume_mv  = 4950; ///< resume only once VIN recovers above this
-    uint16_t vbat_target_mv = 4150; ///< stop charging at/above this VBAT
-    bool     charge_on_battery_only_when_vin_ok = true;
-};
-
 class PMIC {
 public:
     /// Probe the PMIC on an existing I2C master bus. Safe to call when the chip
@@ -87,18 +78,12 @@ public:
     esp_err_t feed_watchdog();
     esp_err_t set_watchdog_seconds(uint8_t sec); ///< 0 disables
 
-    /// Run one governor step: read VIN/VBAT/source and toggle CHG_EN so the
-    /// input draw stays within the CN105 budget. Call ~1 Hz from a task.
-    /// NOTE: CHG_EN auto-clears on PMIC reset/download — re-assert after boot.
-    esp_err_t governor_tick(const GovernorConfig& cfg);
-
 private:
     esp_err_t read_reg8(uint8_t reg, uint8_t& val);
     esp_err_t write_reg8(uint8_t reg, uint8_t val);
     esp_err_t read_u16le(uint8_t reg_lo, uint16_t& val);
 
     i2c_master_dev_handle_t dev_{nullptr};
-    bool charging_{false};
 };
 
 }  // namespace m5pm1
