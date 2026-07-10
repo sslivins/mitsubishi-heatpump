@@ -39,9 +39,22 @@ namespace web_ui {
 struct PowerTelemetry {
     bool        present  = false;
     uint16_t    vbat_mv  = 0;
-    uint16_t    vin_mv   = 0;
+    uint16_t    vin_mv   = 0;   ///< raw dedicated 5VIN pin
+    uint16_t    vinout_mv= 0;   ///< raw bidirectional 5VINOUT port
+    uint16_t    input_mv = 0;   ///< effective supply = max(vin, vinout)
     const char* source   = "unknown";  ///< "vin" | "vin_out" | "battery" | "unknown"
     bool        charging = false;
+};
+
+/// Diagnostics snapshot for the dashboard (boot/brownout/power-sag).
+struct DiagTelemetry {
+    uint32_t    boot_count      = 0;
+    uint32_t    brownout_count  = 0;
+    uint16_t    vin_min_ever_mv = 0;
+    const char* reset_reason    = "unknown";
+    bool        last_was_brownout = false;
+    uint16_t    vin_min_mv      = 0;
+    uint32_t    vin_sag_count   = 0;
 };
 
 /// Application-supplied accessors. All are invoked from the HTTP server task.
@@ -51,6 +64,7 @@ struct Hooks {
     std::function<bool()>                          unit_connected;
     std::function<bool()>                          mqtt_connected;
     std::function<PowerTelemetry()>                get_power;
+    std::function<DiagTelemetry()>                 get_diag;
     std::function<void(const hvac_mqtt::Command&)> apply_command;
 };
 

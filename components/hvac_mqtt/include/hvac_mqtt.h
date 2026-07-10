@@ -22,6 +22,7 @@
 
 #include <functional>
 #include <string>
+#include <cstdint>
 #include "cn105.h"
 #include "esp_err.h"
 
@@ -108,6 +109,24 @@ esp_err_t publish_update_state(const std::string& installed,
                                const std::string& release_url = "",
                                const std::string& release_summary = "",
                                int update_percentage = -1);
+
+/// Diagnostics reported to Home Assistant as `entity_category: diagnostic`
+/// sensors: last reset reason, cumulative brownout count, and the lowest input
+/// voltage seen. Lets HA alert/graph power health without a battery attached.
+struct DiagState {
+    const char* reset_reason   = "unknown";
+    uint32_t    brownout_count = 0;
+    uint32_t    vin_sag_count  = 0;
+    uint16_t    vin_min_mv     = 0;   ///< lowest effective input this session (mV)
+};
+
+/// Publish the HA MQTT-discovery configs (retained) for the diagnostic sensors
+/// above. Additive — does not touch the existing climate/update topic contract.
+/// Call once after the first successful connect.
+esp_err_t publish_diag_discovery();
+
+/// Publish the current diagnostic values (retained JSON) to .../diag/state.
+esp_err_t publish_diag_state(const DiagState& d);
 
 bool is_connected();
 
