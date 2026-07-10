@@ -1,13 +1,14 @@
 /// @file main.cpp
 /// @brief mitsubishi-heatpump entry point.
 ///
-/// Wiring:  NVS -> M5PM1 PMIC (charge governor) -> WiFi -> MQTT -> CN105.
+/// Wiring:  NVS -> M5PM1 PMIC -> WiFi -> MQTT -> CN105.
 ///
 /// The CN105 task pumps the Mitsubishi serial protocol and republishes state to
 /// MQTT; inbound MQTT commands are applied back to the heat pump. The PMIC task
-/// keeps battery charging within the CN105 5V budget and feeds the PMIC
-/// watchdog. Both protocol/PMIC layers are stubs today (see their .cpp files)
-/// but the control flow and threading model are real.
+/// refreshes power telemetry, feeds the PMIC watchdog, and tracks sag/brownout
+/// diagnostics; charging itself is handled by the LGS4056HDA hardware charger.
+/// Both protocol/PMIC layers are stubs today (see their .cpp files) but the
+/// control flow and threading model are real.
 
 #include "wifi_manager.h"
 #include "cn105.h"
@@ -71,20 +72,22 @@ m5pm1::PowerSource derive_source(uint16_t vin_mv, uint16_t vinout_mv, uint16_t v
     return m5pm1::PowerSource::UNKNOWN;
 }
 
-// --- PMIC / charge-governor task (~1 Hz) ---
+// --- PMIC / telemetry task (~1 Hz) ---
+//
+// Charge control is left entirely to the LGS4056HDA hardware charger: CHG_EN is
+// asserted once at boot (init_pmic) and the IC runs its own CC/CV cycle and
+// termination. Bench testing showed the board rides WiFi/CPU current peaks off
+// the battery with zero brownouts at the CN105 5V budget, so there is no
+// firmware charge governor. This task just refreshes telemetry and feeds the
+// PMIC watchdog + the sag/brownout diagnostics.
+constexpr uint16_t kBattPresentMv = 3000; ///< below this, treat VBAT as "no battery"
+constexpr uint16_t kBattFullMv    = 4180; ///< CV plateau — above this, charge has tapered
+constexpr uint16_t kVinSagFloorMv = 4800; ///< diag sag early-warning threshold (mV)
+
 void pmic_task(void*) {
-    m5pm1::GovernorConfig gov{};
-#ifdef CONFIG_PMIC_CHARGE_GOVERNOR
-    gov.vin_floor_mv   = CONFIG_PMIC_VIN_FLOOR_MV;
-    gov.vin_resume_mv  = CONFIG_PMIC_VIN_RESUME_MV;
-    gov.vbat_target_mv = CONFIG_PMIC_VBAT_TARGET_MV;
-#endif
     while (true) {
         if (g_pmic.present()) {
             g_pmic.feed_watchdog();
-#ifdef CONFIG_PMIC_CHARGE_GOVERNOR
-            g_pmic.governor_tick(gov);
-#endif
             PowerSnap snap;
             snap.present = true;
             g_pmic.read_vbat_mv(snap.vbat_mv);
@@ -92,16 +95,17 @@ void pmic_task(void*) {
             g_pmic.read_vinout_mv(snap.vinout_mv);
             snap.input_mv = (snap.vin_mv > snap.vinout_mv) ? snap.vin_mv : snap.vinout_mv;
             snap.source = derive_source(snap.vin_mv, snap.vinout_mv, snap.vbat_mv);
-            // Charging only makes sense when a real battery is present (>=3.0V)
-            // and we're on external power below the target voltage.
+            // Report charging only when an external input is present and a real
+            // battery sits below the CV plateau. The LGS4056 owns actual charge
+            // current; this is a best-effort display heuristic (no status pin).
             snap.charging = (snap.source == m5pm1::PowerSource::VIN ||
                              snap.source == m5pm1::PowerSource::VIN_OUT) &&
-                            (snap.vbat_mv >= 3000) &&
-                            (snap.vbat_mv < gov.vbat_target_mv);
+                            (snap.vbat_mv >= kBattPresentMv) &&
+                            (snap.vbat_mv < kBattFullMv);
             std::lock_guard<std::mutex> lock(g_pwr_mtx);
             g_pwr = snap;
             // Feed the sag/brownout early-warning tracker with effective input.
-            diag::note_vin(snap.input_mv, gov.vin_floor_mv);
+            diag::note_vin(snap.input_mv, kVinSagFloorMv);
         }
         // Push diagnostics to HA on sag/record-low change, and at least every
         // ~30 s so RSSI (which drifts continuously) stays fresh without spamming.
@@ -194,8 +198,8 @@ void init_pmic() {
         return;
     }
     if (g_pmic.init(bus) == ESP_OK) {
-        // CHG_EN auto-clears on PMIC reset, so re-assert intent here. The
-        // governor takes over modulation immediately after.
+        // CHG_EN auto-clears on PMIC reset, so re-assert intent here. From this
+        // point the LGS4056HDA runs its own CC/CV charge cycle and termination.
         g_pmic.set_charge_enable(true);
     }
 }
