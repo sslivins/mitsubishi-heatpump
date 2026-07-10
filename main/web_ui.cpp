@@ -196,9 +196,22 @@ esp_err_t handle_status(httpd_req_t* req) {
     cJSON_AddBoolToObject(p, "present", pwr.present);
     cJSON_AddNumberToObject(p, "vbat_mv", pwr.vbat_mv);
     cJSON_AddNumberToObject(p, "vin_mv", pwr.vin_mv);
+    cJSON_AddNumberToObject(p, "vinout_mv", pwr.vinout_mv);
+    cJSON_AddNumberToObject(p, "input_mv", pwr.input_mv);
     cJSON_AddStringToObject(p, "source", pwr.source);
     cJSON_AddBoolToObject(p, "charging", pwr.charging);
     cJSON_AddItemToObject(root, "power", p);
+
+    DiagTelemetry dg = s_hooks.get_diag ? s_hooks.get_diag() : DiagTelemetry{};
+    cJSON* d = cJSON_CreateObject();
+    cJSON_AddNumberToObject(d, "boot_count", dg.boot_count);
+    cJSON_AddNumberToObject(d, "brownout_count", dg.brownout_count);
+    cJSON_AddStringToObject(d, "reset_reason", dg.reset_reason);
+    cJSON_AddBoolToObject(d, "last_was_brownout", dg.last_was_brownout);
+    cJSON_AddNumberToObject(d, "vin_min_mv", dg.vin_min_mv);
+    cJSON_AddNumberToObject(d, "vin_min_ever_mv", dg.vin_min_ever_mv);
+    cJSON_AddNumberToObject(d, "vin_sag_count", dg.vin_sag_count);
+    cJSON_AddItemToObject(root, "diag", d);
 
     char* str = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");

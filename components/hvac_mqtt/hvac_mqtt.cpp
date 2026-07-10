@@ -258,6 +258,75 @@ esp_err_t publish_update_state(const std::string& installed,
     return id < 0 ? ESP_FAIL : ESP_OK;
 }
 
+// Helper: emit one HA diagnostic sensor discovery config (retained).
+static esp_err_t publish_diag_sensor(const char* name, const char* id_suffix,
+                                     const char* value_template,
+                                     const char* device_class,
+                                     const char* unit,
+                                     const char* icon) {
+    std::string state_topic = t("/diag/state");
+    std::string avail_topic = t("/availability");
+    std::string unique_id   = g_cfg.device_uid + "_" + id_suffix;
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "name", name);
+    cJSON_AddStringToObject(root, "unique_id", unique_id.c_str());
+    cJSON_AddStringToObject(root, "object_id", unique_id.c_str());
+    cJSON_AddStringToObject(root, "state_topic", state_topic.c_str());
+    cJSON_AddStringToObject(root, "value_template", value_template);
+    cJSON_AddStringToObject(root, "entity_category", "diagnostic");
+    if (device_class) cJSON_AddStringToObject(root, "device_class", device_class);
+    if (unit)         cJSON_AddStringToObject(root, "unit_of_measurement", unit);
+    if (icon)         cJSON_AddStringToObject(root, "icon", icon);
+    cJSON_AddStringToObject(root, "availability_topic", avail_topic.c_str());
+    cJSON_AddStringToObject(root, "payload_available", "online");
+    cJSON_AddStringToObject(root, "payload_not_available", "offline");
+    cJSON_AddItemToObject(root, "device", make_device_block());
+
+    char* payload = cJSON_PrintUnformatted(root);
+    std::string topic = "homeassistant/sensor/" + g_cfg.friendly_name + "_" +
+                        id_suffix + "/config";
+    int id = payload ? esp_mqtt_client_publish(g_client, topic.c_str(), payload, 0, 1, true) : -1;
+    if (payload) cJSON_free(payload);
+    cJSON_Delete(root);
+    return id < 0 ? ESP_FAIL : ESP_OK;
+}
+
+esp_err_t publish_diag_discovery() {
+    if (!g_client) return ESP_ERR_INVALID_STATE;
+    esp_err_t rc = ESP_OK;
+    if (publish_diag_sensor("Last reset reason", "reset_reason",
+                            "{{ value_json.reset_reason }}",
+                            nullptr, nullptr, "mdi:restart") != ESP_OK) rc = ESP_FAIL;
+    if (publish_diag_sensor("Brownout count", "brownout_count",
+                            "{{ value_json.brownout_count }}",
+                            nullptr, nullptr, "mdi:flash-alert") != ESP_OK) rc = ESP_FAIL;
+    if (publish_diag_sensor("Input sags", "vin_sag_count",
+                            "{{ value_json.vin_sag_count }}",
+                            nullptr, nullptr, "mdi:sine-wave") != ESP_OK) rc = ESP_FAIL;
+    if (publish_diag_sensor("Min input voltage", "vin_min",
+                            "{{ value_json.vin_min_mv }}",
+                            "voltage", "mV", nullptr) != ESP_OK) rc = ESP_FAIL;
+    ESP_LOGI(TAG, "publish_diag_discovery");
+    return rc;
+}
+
+esp_err_t publish_diag_state(const DiagState& d) {
+    if (!g_client) return ESP_ERR_INVALID_STATE;
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "reset_reason", d.reset_reason);
+    cJSON_AddNumberToObject(root, "brownout_count", d.brownout_count);
+    cJSON_AddNumberToObject(root, "vin_sag_count", d.vin_sag_count);
+    cJSON_AddNumberToObject(root, "vin_min_mv", d.vin_min_mv);
+
+    char* payload = cJSON_PrintUnformatted(root);
+    std::string topic = t("/diag/state");
+    int id = payload ? esp_mqtt_client_publish(g_client, topic.c_str(), payload, 0, 1, true) : -1;
+    if (payload) cJSON_free(payload);
+    cJSON_Delete(root);
+    return id < 0 ? ESP_FAIL : ESP_OK;
+}
+
 esp_err_t publish_settings(const cn105::Settings& s) {
     if (!g_client) return ESP_ERR_INVALID_STATE;
     cJSON* root = cJSON_CreateObject();

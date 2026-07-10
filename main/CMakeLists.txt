@@ -18,6 +18,7 @@ idf_component_register(
          "dns_server.cpp"
          "ota.cpp"
          "auth_manager.cpp"
+         "diag.cpp"
     INCLUDE_DIRS "."
     EMBED_FILES "web/index.html.gz"
                 "web/portal.html.gz"

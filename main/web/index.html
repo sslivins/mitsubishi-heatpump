@@ -317,9 +317,13 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     <h2>Power</h2>
     <div class="grid">
       <div class="stat"><div class="k">Battery</div><div class="v" id="vbat">--</div></div>
-      <div class="stat"><div class="k">Input (5V)</div><div class="v" id="vin">--</div></div>
+      <div class="stat"><div class="k">Input</div><div class="v" id="vin">--</div></div>
       <div class="stat"><div class="k">Source</div><div class="v" id="psrc">--</div></div>
       <div class="stat"><div class="k">Charging</div><div class="v" id="chg">--</div></div>
+      <div class="stat"><div class="k">5VIN pin</div><div class="v" id="vinPin">--</div></div>
+      <div class="stat"><div class="k">5VINOUT port</div><div class="v" id="vinOut">--</div></div>
+      <div class="stat"><div class="k">Min input</div><div class="v" id="vinMin">--</div></div>
+      <div class="stat"><div class="k">Sags</div><div class="v" id="vinSags">--</div></div>
     </div>
   </div>
   </div><!-- /panel-power -->
@@ -332,6 +336,8 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
       <div class="stat"><div class="k">IP</div><div class="v" id="ip">--</div></div>
       <div class="stat"><div class="k">Uptime</div><div class="v" id="uptime">--</div></div>
       <div class="stat"><div class="k">Free heap</div><div class="v" id="heap">--</div></div>
+      <div class="stat"><div class="k">Last reset</div><div class="v" id="rst">--</div></div>
+      <div class="stat"><div class="k">Brownouts</div><div class="v" id="bo">--</div></div>
     </div>
     <button class="btn btn-warn" onclick="sysPost('/api/system/restart','Restart device?')">Restart</button>
   </div>
@@ -568,9 +574,18 @@ async function refresh(){
     $('heap').textContent=(s.free_heap/1024|0)+' KB';
     const p=s.power||{};
     $('vbat').textContent=p.present?(p.vbat_mv/1000).toFixed(2)+' V':'n/a';
-    $('vin').textContent=p.present?(p.vin_mv/1000).toFixed(2)+' V':'n/a';
+    $('vin').textContent=p.present?((p.input_mv!=null?p.input_mv:p.vin_mv)/1000).toFixed(2)+' V':'n/a';
+    $('vinPin').textContent=p.present?(p.vin_mv/1000).toFixed(2)+' V':'n/a';
+    $('vinOut').textContent=p.present?((p.vinout_mv||0)/1000).toFixed(2)+' V':'n/a';
     $('psrc').textContent=p.present?(p.source||'--'):'n/a';
     $('chg').textContent=p.present?(p.charging?'yes':'no'):'n/a';
+    const d=s.diag||{};
+    $('vinMin').textContent=(d.vin_min_mv?((d.vin_min_mv/1000).toFixed(2)+' V'):'--');
+    $('vinSags').textContent=(d.vin_sag_count!=null?d.vin_sag_count:'--');
+    $('rst').textContent=(d.reset_reason||'--');
+    $('rst').style.color=d.last_was_brownout?'#ff5252':'';
+    $('bo').textContent=(d.brownout_count!=null?d.brownout_count:'--');
+    $('bo').style.color=(d.brownout_count>0)?'#ff5252':'';
     $('stubNote').style.display=s.unit_connected?'none':'block';
     $('dgLink').textContent=s.unit_connected?'connected':'not connected';
 

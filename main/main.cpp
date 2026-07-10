@@ -15,6 +15,7 @@
 #include "hvac_mqtt.h"
 #include "web_ui.h"
 #include "ota.h"
+#include "diag.h"
 
 #include <cstdlib>
 #include <cstdio>
@@ -42,7 +43,9 @@ m5pm1::PMIC     g_pmic;
 struct PowerSnap {
     bool                present  = false;
     uint16_t            vbat_mv  = 0;
-    uint16_t            vin_mv   = 0;
+    uint16_t            vin_mv   = 0;   ///< raw dedicated 5VIN pin
+    uint16_t            vinout_mv= 0;   ///< raw bidirectional 5VINOUT port
+    uint16_t            input_mv = 0;   ///< effective supply = max(vin, vinout)
     m5pm1::PowerSource  source   = m5pm1::PowerSource::UNKNOWN;
     bool                charging = false;
 };
@@ -56,6 +59,16 @@ const char* power_source_str(m5pm1::PowerSource s) {
         case m5pm1::PowerSource::BATTERY: return "battery";
         default:                          return "unknown";
     }
+}
+
+// Derive the active power source from the measured rails. The PMIC's PWR_SRC
+// register proved unreliable on the Stamp-S3Bat (reads "BAT" while USB-powered),
+// so trust the ADC: whichever rail is at a healthy 5V is the live source.
+m5pm1::PowerSource derive_source(uint16_t vin_mv, uint16_t vinout_mv, uint16_t vbat_mv) {
+    if (vinout_mv >= 4500) return m5pm1::PowerSource::VIN_OUT;
+    if (vin_mv    >= 4500) return m5pm1::PowerSource::VIN;
+    if (vbat_mv   >= 3000) return m5pm1::PowerSource::BATTERY;
+    return m5pm1::PowerSource::UNKNOWN;
 }
 
 // --- PMIC / charge-governor task (~1 Hz) ---
@@ -76,12 +89,34 @@ void pmic_task(void*) {
             snap.present = true;
             g_pmic.read_vbat_mv(snap.vbat_mv);
             g_pmic.read_vin_mv(snap.vin_mv);
-            g_pmic.read_power_source(snap.source);
-            // Best-effort: on external power and below target → likely charging.
-            snap.charging = (snap.source != m5pm1::PowerSource::BATTERY) &&
+            g_pmic.read_vinout_mv(snap.vinout_mv);
+            snap.input_mv = (snap.vin_mv > snap.vinout_mv) ? snap.vin_mv : snap.vinout_mv;
+            snap.source = derive_source(snap.vin_mv, snap.vinout_mv, snap.vbat_mv);
+            // Charging only makes sense when a real battery is present (>=3.0V)
+            // and we're on external power below the target voltage.
+            snap.charging = (snap.source == m5pm1::PowerSource::VIN ||
+                             snap.source == m5pm1::PowerSource::VIN_OUT) &&
+                            (snap.vbat_mv >= 3000) &&
                             (snap.vbat_mv < gov.vbat_target_mv);
             std::lock_guard<std::mutex> lock(g_pwr_mtx);
             g_pwr = snap;
+            // Feed the sag/brownout early-warning tracker with effective input.
+            diag::note_vin(snap.input_mv, gov.vin_floor_mv);
+        }
+        // Push diagnostics to HA only when the sag count or record-low changes,
+        // so a healthy rail never spams the broker.
+        {
+            static uint32_t last_sags = UINT32_MAX;
+            static uint16_t last_min  = UINT16_MAX;
+            diag::Snapshot ds = diag::get();
+            if (ds.vin_sag_count != last_sags || ds.vin_min_mv != last_min) {
+                last_sags = ds.vin_sag_count;
+                last_min  = ds.vin_min_mv;
+                if (hvac_mqtt::is_connected()) {
+                    hvac_mqtt::publish_diag_state({ds.reset_reason, ds.brownout_count,
+                                                   ds.vin_sag_count, ds.vin_min_mv});
+                }
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -170,6 +205,10 @@ extern "C" void app_main() {
     }
     ESP_ERROR_CHECK(ret);
 
+    // Latch reset reason + brownout/boot counters from NVS before anything else
+    // touches the power path.
+    diag::init();
+
     ota::init();
 
     // Power management first — it owns the battery/charge path.
@@ -227,10 +266,14 @@ extern "C" void app_main() {
     hvac_mqtt::set_on_connected([] {
         hvac_mqtt::publish_discovery(g_hp.getSettings());
         hvac_mqtt::publish_update_discovery();
+        hvac_mqtt::publish_diag_discovery();
         hvac_mqtt::publish_settings(g_hp.getSettings());
         hvac_mqtt::publish_state(g_hp.getSettings(), g_hp.getStatus());
         ota::UpdateInfo u = ota::get_update_info();
         hvac_mqtt::publish_update_state(u.current_version, u.latest_version, u.release_url);
+        diag::Snapshot ds = diag::get();
+        hvac_mqtt::publish_diag_state({ds.reset_reason, ds.brownout_count,
+                                       ds.vin_sag_count, ds.vin_min_mv});
     });
 
     // On-device web UI (REST + dashboard). Reuses on_mqtt_command so the web
@@ -244,11 +287,25 @@ extern "C" void app_main() {
     hooks.get_power = [] {
         web_ui::PowerTelemetry t;
         std::lock_guard<std::mutex> lock(g_pwr_mtx);
-        t.present  = g_pwr.present;
-        t.vbat_mv  = g_pwr.vbat_mv;
-        t.vin_mv   = g_pwr.vin_mv;
-        t.source   = power_source_str(g_pwr.source);
-        t.charging = g_pwr.charging;
+        t.present   = g_pwr.present;
+        t.vbat_mv   = g_pwr.vbat_mv;
+        t.vin_mv    = g_pwr.vin_mv;
+        t.vinout_mv = g_pwr.vinout_mv;
+        t.input_mv  = g_pwr.input_mv;
+        t.source    = power_source_str(g_pwr.source);
+        t.charging  = g_pwr.charging;
+        return t;
+    };
+    hooks.get_diag = [] {
+        diag::Snapshot s = diag::get();
+        web_ui::DiagTelemetry t;
+        t.boot_count        = s.boot_count;
+        t.brownout_count    = s.brownout_count;
+        t.reset_reason      = s.reset_reason;
+        t.last_was_brownout = s.last_was_brownout;
+        t.vin_min_mv        = s.vin_min_mv;
+        t.vin_min_ever_mv   = s.vin_min_ever_mv;
+        t.vin_sag_count     = s.vin_sag_count;
         return t;
     };
     if (web_ui::init(hooks) != ESP_OK) {

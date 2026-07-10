@@ -47,16 +47,26 @@ esp_err_t PMIC::write_reg8(uint8_t reg, uint8_t val) {
     return i2c_master_transmit(dev_, buf, sizeof(buf), 100);
 }
 
-esp_err_t PMIC::read_u16be(uint8_t reg_hi, uint16_t& val) {
+esp_err_t PMIC::read_u16le(uint8_t reg_lo, uint16_t& val) {
     if (!dev_) return ESP_ERR_INVALID_STATE;
     uint8_t out[2];
-    esp_err_t err = i2c_master_transmit_receive(dev_, &reg_hi, 1, out, 2, 100);
-    if (err == ESP_OK) val = (static_cast<uint16_t>(out[0]) << 8) | out[1];
+    esp_err_t err = i2c_master_transmit_receive(dev_, &reg_lo, 1, out, 2, 100);
+    // M5PM1 voltage registers are little-endian: low byte at the base address.
+    if (err == ESP_OK) val = static_cast<uint16_t>(out[0]) | (static_cast<uint16_t>(out[1]) << 8);
     return err;
 }
 
-esp_err_t PMIC::read_vbat_mv(uint16_t& mv) { return read_u16be(REG_VBAT_H, mv); }
-esp_err_t PMIC::read_vin_mv(uint16_t& mv)  { return read_u16be(REG_VIN_H, mv); }
+esp_err_t PMIC::read_vbat_mv(uint16_t& mv)   { return read_u16le(REG_VBAT_L, mv); }
+esp_err_t PMIC::read_vin_mv(uint16_t& mv)    { return read_u16le(REG_VIN_L, mv); }
+esp_err_t PMIC::read_vinout_mv(uint16_t& mv) { return read_u16le(REG_VINOUT_L, mv); }
+
+esp_err_t PMIC::read_input_mv(uint16_t& mv) {
+    uint16_t vin = 0, vinout = 0;
+    read_vin_mv(vin);
+    read_vinout_mv(vinout);
+    mv = (vin > vinout) ? vin : vinout;
+    return ESP_OK;
+}
 
 esp_err_t PMIC::read_power_source(PowerSource& src) {
     uint8_t v;
@@ -91,7 +101,7 @@ esp_err_t PMIC::governor_tick(const GovernorConfig& cfg) {
     if (!dev_) return ESP_ERR_INVALID_STATE;
 
     uint16_t vin = 0, vbat = 0;
-    read_vin_mv(vin);
+    read_input_mv(vin);   // effective supply: max(5VIN, 5VINOUT)
     read_vbat_mv(vbat);
 
     bool want_charge = charging_;

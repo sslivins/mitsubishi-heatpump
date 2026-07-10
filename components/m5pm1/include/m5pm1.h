@@ -33,8 +33,14 @@ enum Reg : uint8_t {
     REG_WDT_CNT  = 0x0A, ///< watchdog timeout sec (0=off)
     REG_WDT_KEY  = 0x0B, ///< write 0xA5 to feed the watchdog
     REG_SYS_CMD  = 0x0C, ///< shutdown/reboot/download (key 0xA in high nibble)
-    REG_VBAT_H   = 0x22, ///< battery voltage, mV, big-endian 16-bit
-    REG_VIN_H    = 0x24, ///< input (5V) voltage, mV, big-endian 16-bit
+    // Voltage-reading registers. Each is a 16-bit value in mV, stored
+    // LITTLE-ENDIAN with the low byte at the base (_L) address. Read 2 bytes
+    // starting at the _L register; the result is already in mV (no scaling).
+    // (Confirmed against m5stack/M5PM1 src/M5PM1.cpp readVbat/readVin.)
+    REG_VREF_L   = 0x20, ///< ADC reference voltage, mV, LE16
+    REG_VBAT_L   = 0x22, ///< battery voltage, mV, LE16 (VBAT_H=0x23)
+    REG_VIN_L    = 0x24, ///< input (5V) voltage, mV, LE16 (VIN_H=0x25)
+    REG_VINOUT_L = 0x26, ///< 5VINOUT voltage, mV, LE16 (VINOUT_H=0x27)
 };
 
 /// PWR_CFG bit positions.
@@ -65,7 +71,12 @@ public:
 
     // --- Telemetry ---
     esp_err_t read_vbat_mv(uint16_t& mv);
-    esp_err_t read_vin_mv(uint16_t& mv);
+    esp_err_t read_vin_mv(uint16_t& mv);      ///< dedicated 5VIN pin (0x24)
+    esp_err_t read_vinout_mv(uint16_t& mv);   ///< bidirectional 5VINOUT port (0x26)
+    /// Effective supply = whichever input rail is actually powered
+    /// (max of VIN and 5VINOUT). This is what the board is running from,
+    /// regardless of which physical input the 5V is wired to.
+    esp_err_t read_input_mv(uint16_t& mv);
     esp_err_t read_power_source(PowerSource& src);
 
     // --- Charge control ---
@@ -84,7 +95,7 @@ public:
 private:
     esp_err_t read_reg8(uint8_t reg, uint8_t& val);
     esp_err_t write_reg8(uint8_t reg, uint8_t val);
-    esp_err_t read_u16be(uint8_t reg_hi, uint16_t& val);
+    esp_err_t read_u16le(uint8_t reg_lo, uint16_t& val);
 
     i2c_master_dev_handle_t dev_{nullptr};
     bool charging_{false};
