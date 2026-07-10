@@ -307,6 +307,9 @@ esp_err_t publish_diag_discovery() {
     if (publish_diag_sensor("Min input voltage", "vin_min",
                             "{{ value_json.vin_min_mv }}",
                             "voltage", "mV", nullptr) != ESP_OK) rc = ESP_FAIL;
+    if (publish_diag_sensor("WiFi signal", "rssi",
+                            "{{ value_json.rssi_dbm }}",
+                            "signal_strength", "dBm", nullptr) != ESP_OK) rc = ESP_FAIL;
     ESP_LOGI(TAG, "publish_diag_discovery");
     return rc;
 }
@@ -318,6 +321,7 @@ esp_err_t publish_diag_state(const DiagState& d) {
     cJSON_AddNumberToObject(root, "brownout_count", d.brownout_count);
     cJSON_AddNumberToObject(root, "vin_sag_count", d.vin_sag_count);
     cJSON_AddNumberToObject(root, "vin_min_mv", d.vin_min_mv);
+    cJSON_AddNumberToObject(root, "rssi_dbm", d.rssi_dbm);
 
     char* payload = cJSON_PrintUnformatted(root);
     std::string topic = t("/diag/state");

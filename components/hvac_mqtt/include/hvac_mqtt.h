@@ -118,6 +118,7 @@ struct DiagState {
     uint32_t    brownout_count = 0;
     uint32_t    vin_sag_count  = 0;
     uint16_t    vin_min_mv     = 0;   ///< lowest effective input this session (mV)
+    int         rssi_dbm       = 0;   ///< current WiFi RSSI (dBm; 0 = unknown)
 };
 
 /// Publish the HA MQTT-discovery configs (retained) for the diagnostic sensors
