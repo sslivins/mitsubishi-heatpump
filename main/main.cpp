@@ -249,7 +249,7 @@ extern "C" void app_main() {
     hvac_mqtt::StoredSettings ms = hvac_mqtt::load_settings(fallback);
 
     std::string friendly = ms.friendly_name;
-    if (friendly.empty()) friendly = "heatpump-" + uid;
+    if (friendly.empty()) friendly = wifi::mdns_hostname();
     char uri[128];
     std::snprintf(uri, sizeof(uri), "mqtt://%s:%d", ms.host.c_str(), ms.port);
     ESP_LOGI(TAG, "device uid %s, broker %s, mqtt node '%s'",

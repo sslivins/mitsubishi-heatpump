@@ -284,7 +284,7 @@ std::string device_uid() {
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     char buf[5];
-    std::snprintf(buf, sizeof(buf), "%02X%02X", mac[4], mac[5]);
+    std::snprintf(buf, sizeof(buf), "%02x%02x", mac[4], mac[5]);
     return std::string(buf);
 }
 
