@@ -473,9 +473,6 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 
   <div class="card" data-grp="sensors">
     <h2>Heat pump sensors</h2>
-    <p class="note" id="diagNote" style="margin:0 0 12px">Live telemetry read from
-      the unit over the CN105 serial link. Shows <code>--</code> until a unit is
-      connected.</p>
     <div class="grid">
       <div class="stat"><div class="k">Unit link</div><div class="v" id="dgLink">--</div></div>
       <div class="stat"><div class="k">Operating</div><div class="v" id="dgOp">--</div></div>
@@ -552,6 +549,27 @@ function fmtUptime(s){
   if(d)return `${d}d ${h}h`;if(h)return `${h}h ${m}m`;return `${m}m`;
 }
 
+// Optimistic-edit reconciliation: when the user changes a setting we show the
+// new value immediately, but a background poll of /api/settings can briefly
+// read the *old* value before the CN105 ack round-trip updates the unit's
+// reported state — causing the control to snap back and then forward again.
+// Track pending edits and keep the optimistic value until the device confirms
+// it (server value matches) or a grace window lapses (so a clamped/rejected
+// value still reverts to the real one).
+let pend={};
+const PEND_GRACE_MS=8000;
+function setPending(body){const now=Date.now();for(const k in body){pend[k]={v:body[k],until:now+PEND_GRACE_MS};}}
+// Returns true if refresh should apply the server value, false to keep the
+// pending optimistic value for now.
+function confirmField(k,serverVal){
+  const p=pend[k];if(!p)return true;
+  const a=(''+serverVal).toLowerCase(), b=(''+p.v).toLowerCase();
+  const match=(a===b)||(!isNaN(parseFloat(serverVal))&&parseFloat(serverVal)===parseFloat(p.v));
+  if(match){delete pend[k];return true;}       // device confirmed our edit
+  if(Date.now()>=p.until){delete pend[k];return true;} // gave up waiting → accept truth
+  return false;                                 // still waiting → hold optimistic value
+}
+
 async function refresh(){
   try{
     const r=await jget('/api/status');
@@ -591,14 +609,14 @@ async function refresh(){
 
     if(!userEditing){
       const c=await (await fetch('/api/settings')).json();
-      climate.power=(c.power==='ON');
-      climate.mode=c.mode||climate.mode;
-      climate.temp=c.temperature!=null?c.temperature:climate.temp;
+      if(confirmField('power',c.power)) climate.power=(c.power==='ON');
+      if(confirmField('mode',c.mode)) climate.mode=c.mode||climate.mode;
+      if(c.temperature!=null&&confirmField('temperature',c.temperature)) climate.temp=c.temperature;
       climate.room=(c.roomTemperature!=null&&c.roomTemperature>0)?c.roomTemperature:null;
       climate.operating=!!c.operating;
-      if(c.fan)$('fan').value=c.fan;
-      if(c.vane)$('vane').value=c.vane;
-      if(c.wideVane)$('wideVane').value=c.wideVane;
+      if(c.fan&&confirmField('fan',c.fan))$('fan').value=c.fan;
+      if(c.vane&&confirmField('vane',c.vane))$('vane').value=c.vane;
+      if(c.wideVane&&confirmField('wideVane',c.wideVane))$('wideVane').value=c.wideVane;
       renderClimate();
       // Diagnostics tab — live serial telemetry.
       const conn=!!c.connected;
@@ -665,6 +683,7 @@ function renderClimate(){
 
 async function post(body){
   userEditing=true;
+  setPending(body);
   try{
     await fetch('/api/settings',{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
