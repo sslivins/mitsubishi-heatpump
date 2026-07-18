@@ -332,7 +332,28 @@ void HeatPump::flushWanted_(const Settings& wanted) {
         xSemaphoreTake(want_mtx_, portMAX_DELAY);
         d_power_ = d_mode_ = d_temp_ = d_fan_ = d_vane_ = d_wideVane_ = false;
         xSemaphoreGive(want_mtx_);
-        infoMode_ = 0;  // re-read settings on the next info tick
+
+        // Optimistically reflect the accepted values into current_ so `differs`
+        // clears right away. Otherwise pump_ re-enters this flush every cycle:
+        // current_ is only refreshed by an INFO poll, but the early-return in
+        // pump_ after a flush starves INFO polling while any set is pending.
+        // The result was a permanent SET storm (same packet every ~1s) with the
+        // UI/MQTT frozen on the pre-change state even though the unit had already
+        // applied the change. The next INFO tick still re-reads to confirm.
+        bool changed = (current_.power != wanted.power) ||
+                       (current_.mode != wanted.mode) ||
+                       (current_.temperature != wanted.temperature) ||
+                       (current_.fan != wanted.fan) ||
+                       (current_.vane != wanted.vane) ||
+                       (current_.wideVane != wanted.wideVane);
+        current_.power       = wanted.power;
+        current_.mode        = wanted.mode;
+        current_.temperature = wanted.temperature;
+        current_.fan         = wanted.fan;
+        current_.vane        = wanted.vane;
+        current_.wideVane    = wanted.wideVane;
+        if (changed) settingsChanged_ = true;  // push the new state to UI + MQTT
+        infoMode_ = 0;  // re-read settings on the next info tick to confirm
     }
 }
 
