@@ -733,6 +733,28 @@ esp_err_t handle_group_state(httpd_req_t* req) {
 
 // Fetch one peer's signed snapshot; on success fill @p out (state=Known) and set
 // @p incompatible on a protocol-version mismatch. Returns false on any failure.
+
+// Captures the peer's signed response (X-Group-Sig header + body). Response
+// headers are ONLY visible through the event callback — esp_http_client_get_header
+// returns *request* headers, so it can't be used to read the peer's signature.
+struct PollCtx {
+    std::string sig;
+    std::string body;
+};
+
+esp_err_t poll_evt(esp_http_client_event_t* evt) {
+    auto* c = static_cast<PollCtx*>(evt->user_data);
+    if (!c) return ESP_OK;
+    if (evt->event_id == HTTP_EVENT_ON_HEADER && evt->header_key &&
+        strcasecmp(evt->header_key, "X-Group-Sig") == 0) {
+        c->sig = evt->header_value ? evt->header_value : "";
+    } else if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data && evt->data_len > 0) {
+        if (c->body.size() < 1024)
+            c->body.append(static_cast<const char*>(evt->data), evt->data_len);
+    }
+    return ESP_OK;
+}
+
 bool poll_peer(const std::string& uid, hvac_group::MemberObs& out, bool& incompatible) {
     incompatible = false;
     hvac_group::GroupConfig g = hvac_group::get();
@@ -754,11 +776,14 @@ bool poll_peer(const std::string& uid, hvac_group::MemberObs& out, bool& incompa
         hvac_group::signing_string(self, uid, g.group_id, nonce, ""));
     if (nonce.empty() || sig.empty()) return false;
 
+    PollCtx ctx;
     std::string url = std::string("http://") + ip + "/api/group/state";
     esp_http_client_config_t cfg = {};
-    cfg.url        = url.c_str();
-    cfg.method     = HTTP_METHOD_GET;
-    cfg.timeout_ms = 3000;
+    cfg.url           = url.c_str();
+    cfg.method        = HTTP_METHOD_GET;
+    cfg.timeout_ms    = 3000;
+    cfg.event_handler = poll_evt;
+    cfg.user_data     = &ctx;
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     if (!cli) return false;
     esp_http_client_set_header(cli, "X-Group-Sender", self.c_str());
@@ -767,21 +792,12 @@ bool poll_peer(const std::string& uid, hvac_group::MemberObs& out, bool& incompa
     esp_http_client_set_header(cli, "X-Group-Sig",    sig.c_str());
 
     bool ok = false;
-    if (esp_http_client_open(cli, 0) == ESP_OK) {
-        esp_http_client_fetch_headers(cli);
+    if (esp_http_client_perform(cli) == ESP_OK) {
         int status = esp_http_client_get_status_code(cli);
-        std::string body;
-        char buf[128];
-        while (body.size() < 1024) {
-            int n = esp_http_client_read(cli, buf, sizeof(buf));
-            if (n <= 0) break;
-            body.append(buf, n);
-        }
-        char* rsig = nullptr;
-        esp_http_client_get_header(cli, "X-Group-Sig", &rsig);
-        if (status == 200 && rsig &&
+        const std::string& body = ctx.body;
+        if (status == 200 && !ctx.sig.empty() &&
             hvac_group::hmac_verify(
-                hvac_group::signing_string(uid, self, g.group_id, nonce, body), rsig)) {
+                hvac_group::signing_string(uid, self, g.group_id, nonce, body), ctx.sig)) {
             cJSON* j = cJSON_Parse(body.c_str());
             if (j) {
                 const cJSON* juid  = cJSON_GetObjectItem(j, "uid");
@@ -810,7 +826,6 @@ bool poll_peer(const std::string& uid, hvac_group::MemberObs& out, bool& incompa
                 cJSON_Delete(j);
             }
         }
-        esp_http_client_close(cli);
     }
     esp_http_client_cleanup(cli);
     return ok;
