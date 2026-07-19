@@ -495,6 +495,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 function $(id){return document.getElementById(id)}
 let userEditing=false;
 let nameEditing=false;
+let mqEditing=false;   // pause background overwrites while the user edits the MQTT form
 let curName='';   // last-known canonical device name ('' = none set)
 let curHost='';   // mDNS hostname, used as the display fallback
 
@@ -535,6 +536,7 @@ function showTab(name){
   }
   // Scan on entering the Network tab; the poll loop keeps it fresh while shown.
   netTabActive=(name==='network');
+  mqEditing=false;   // switching tabs commits/abandons any in-progress MQTT edit
   if(netTabActive && authState.role==='admin'){ closeJoin(); scanWifi(true); }
   // Re-sync stored auth state when opening Security so the pending-change gate
   // and the toggle reflect the current server state, not a stale snapshot.
@@ -874,16 +876,28 @@ function mqMsg(m,cls){const el=$('mqMsg');el.className='status '+cls;el.textCont
 async function loadMqtt(){
   try{
     const m=await (await jget('/api/mqtt')).json();
-    $('mqHost').value=m.host||'';
-    $('mqPort').value=m.port||1883;
-    $('mqUser').value=m.username||'';
-    $('mqBase').value=m.base_topic||'';
-    $('mqFriendly').value=m.friendly_name||'';
-    $('mqPass').placeholder=m.password_set?'••••••••':'None set';
+    // Don't clobber half-entered input while the user is editing the form; the
+    // 30s poll would otherwise wipe values before they hit "Save".
+    if(!mqEditing){
+      $('mqHost').value=m.host||'';
+      $('mqPort').value=m.port||1883;
+      $('mqUser').value=m.username||'';
+      $('mqBase').value=m.base_topic||'';
+      $('mqFriendly').value=m.friendly_name||'';
+      $('mqPass').placeholder=m.password_set?'••••••••':'None set';
+    }
     $('mqttStat').textContent=m.connected?'connected':'disconnected';
     $('mqttNode').textContent=m.friendly_name||'heatpump-<id>';
   }catch(e){}
 }
+
+// Latch the edit guard on first focus/keypress in any MQTT field. Released when
+// the form is saved (device reboots) or the tab is switched (see showTab).
+['mqHost','mqPort','mqUser','mqPass','mqBase','mqFriendly'].forEach(id=>{
+  const el=$(id); if(!el) return;
+  el.addEventListener('focus',()=>{mqEditing=true;});
+  el.addEventListener('input',()=>{mqEditing=true;});
+});
 
 async function saveMqtt(){
   const body={
