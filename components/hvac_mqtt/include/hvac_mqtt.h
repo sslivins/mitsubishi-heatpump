@@ -10,8 +10,12 @@
 ///                .../update/install
 ///   Publish:     .../state (retained) .../settings .../availability (LWT)
 ///                .../update/state (retained)
-///   HA discovery: homeassistant/climate/<friendly_name>/config (retained)
-///                 homeassistant/update/<friendly_name>/config (retained)
+///   HA discovery: homeassistant/climate/<hostname>/config (retained)
+///                 homeassistant/update/<hostname>/config (retained)
+///   The discovery object_id is keyed on the immutable hostname (not the
+///   friendly_name), so renaming a unit updates its HA entity in place rather
+///   than orphaning the old retained config (which collided on unique_id and
+///   made the entity disappear).
 ///
 /// Uses esp-mqtt (esp_mqtt). LWT marks the unit unavailable instantly on a
 /// power blip — ideal for the battery-buffered Stamp-S3Bat.
