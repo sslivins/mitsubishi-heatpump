@@ -165,4 +165,144 @@ ClaimDecision evaluate_claim(bool active, bool expired, bool code_matches,
     return ClaimDecision::BadCode;
 }
 
+namespace {
+std::string upper(const std::string& s) {
+    std::string o = s;
+    for (char& c : o)
+        if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    return o;
+}
+}  // namespace
+
+Demand classify_demand(const std::string& power, const std::string& mode) {
+    if (upper(power) != "ON") return Demand::Neutral;
+    const std::string m = upper(mode);
+    if (m == "HEAT") return Demand::Heat;
+    if (m == "COOL" || m == "DRY") return Demand::Cool;
+    if (m == "AUTO") return Demand::Auto;
+    return Demand::Neutral;  // FAN, OFF, or anything unrecognized
+}
+
+Demand opposite(Demand d) {
+    if (d == Demand::Heat) return Demand::Cool;
+    if (d == Demand::Cool) return Demand::Heat;
+    return Demand::Neutral;
+}
+
+const char* demand_str(Demand d) {
+    switch (d) {
+        case Demand::Heat: return "HEAT";
+        case Demand::Cool: return "COOL";
+        case Demand::Auto: return "AUTO";
+        case Demand::Neutral: default: return "OFF";
+    }
+}
+
+const char* status_str(GroupStatus s) {
+    switch (s) {
+        case GroupStatus::Ok:              return "ok";
+        case GroupStatus::PendingConflict: return "pending_conflict";
+        case GroupStatus::Conflict:        return "conflict";
+        case GroupStatus::Indeterminate:   return "indeterminate";
+        case GroupStatus::Standalone: default: return "standalone";
+    }
+}
+
+GroupView evaluate_group(const std::vector<MemberObs>& members) {
+    GroupView v;
+
+    // No enrolled peers ⇒ coordination is disabled. (members[0] is self.)
+    if (members.size() <= 1) {
+        v.status = GroupStatus::Standalone;
+        // Still surface a self lock display if this lone head is running.
+        if (!members.empty() && members[0].active_now &&
+            members[0].demand != Demand::Neutral && members[0].demand != Demand::Auto) {
+            v.locked_mode   = members[0].demand;
+            v.locked_by     = members[0].name;
+            v.locked_by_uid = members[0].uid;
+        }
+        return v;
+    }
+
+    bool has_heat = false, has_cool = false, has_auto = false;
+    bool any_unknown = false, any_incompatible = false;
+    const MemberObs* active = nullptr;   // physically holding the compressor now
+    const MemberObs* blocked = nullptr;  // a head in STANDBY (authoritative signal)
+
+    for (const auto& m : members) {
+        if (m.state == MemberState::Unknown) {
+            any_unknown = true;
+            v.unknown_members.push_back(m.name.empty() ? m.uid : m.name);
+            continue;
+        }
+        if (m.state == MemberState::Incompatible) {
+            any_incompatible = true;
+            v.warnings.push_back((m.name.empty() ? m.uid : m.name) +
+                                 " runs an incompatible protocol version");
+            continue;
+        }
+        // Known / SelfKnown from here on.
+        if (m.power_on) {
+            switch (m.demand) {
+                case Demand::Heat: has_heat = true; break;
+                case Demand::Cool: has_cool = true; break;
+                case Demand::Auto:
+                    has_auto = true;
+                    v.warnings.push_back((m.name.empty() ? m.uid : m.name) +
+                                         " is in AUTO — its direction can't be read");
+                    break;
+                case Demand::Neutral: break;
+            }
+        }
+        if (m.active_now && m.demand != Demand::Neutral && m.demand != Demand::Auto)
+            active = &m;
+        if (m.standby && m.power_on &&
+            (m.demand == Demand::Heat || m.demand == Demand::Cool))
+            blocked = &m;
+    }
+
+    // Establish what the compressor is serving.
+    if (active) {
+        v.locked_mode   = active->demand;
+        v.locked_by     = active->name;
+        v.locked_by_uid = active->uid;
+    } else if (blocked) {
+        // A blocked head proves the compressor is running the opposite direction
+        // for someone we may not directly see.
+        v.locked_mode = opposite(blocked->demand);
+        // owner unknown → leave locked_by empty ("another zone").
+    }
+
+    const bool opposing = has_heat && has_cool;
+
+    if (opposing) {
+        // A real, retained conflict among known members.
+        v.status = (active || blocked) ? GroupStatus::Conflict
+                                       : GroupStatus::PendingConflict;
+        for (const auto& m : members) {
+            if (m.state == MemberState::Unknown || m.state == MemberState::Incompatible)
+                continue;
+            if (!m.power_on) continue;
+            if (m.demand != Demand::Heat && m.demand != Demand::Cool) continue;
+            // If a direction is locked, the blocked members are the opposing ones;
+            // if still pending, list both sides so the user can choose.
+            if (v.locked_mode != Demand::Neutral && m.demand == v.locked_mode) continue;
+            v.conflicts.push_back({m.uid, m.name, m.demand});
+        }
+    } else if (blocked) {
+        // No opposing *known* claim visible, but the hardware STANDBY signal is
+        // authoritative: this head's mode is being blocked by an owner we can't
+        // see (likely an Unknown peer). Fail toward warning the user.
+        v.status = GroupStatus::Conflict;
+        v.conflicts.push_back({blocked->uid, blocked->name, blocked->demand});
+    } else if (any_unknown || any_incompatible || has_auto) {
+        // Can't positively confirm "no conflict".
+        v.status = GroupStatus::Indeterminate;
+    } else {
+        v.status = GroupStatus::Ok;
+    }
+
+    return v;
+}
+
 }  // namespace hvac_group

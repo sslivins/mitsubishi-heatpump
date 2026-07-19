@@ -184,6 +184,104 @@ static void test_evaluate_claim() {
     CHECK_TRUE(evaluate_claim(true, false, false, 3) == ClaimDecision::BadCode);
 }
 
+static MemberObs mk(const std::string& uid, MemberState st, bool on, Demand d,
+                    bool active, bool standby) {
+    MemberObs m;
+    m.uid = uid; m.name = uid; m.state = st;
+    m.power_on = on; m.demand = d; m.active_now = active; m.standby = standby;
+    return m;
+}
+
+static void test_classify_demand() {
+    CHECK_TRUE(classify_demand("ON",  "HEAT") == Demand::Heat);
+    CHECK_TRUE(classify_demand("ON",  "COOL") == Demand::Cool);
+    CHECK_TRUE(classify_demand("ON",  "DRY")  == Demand::Cool);  // DRY draws cooling
+    CHECK_TRUE(classify_demand("ON",  "FAN")  == Demand::Neutral);
+    CHECK_TRUE(classify_demand("ON",  "AUTO") == Demand::Auto);
+    CHECK_TRUE(classify_demand("OFF", "HEAT") == Demand::Neutral);  // power gates it
+    CHECK_TRUE(classify_demand("on",  "cool") == Demand::Cool);     // case-insensitive
+    CHECK_TRUE(opposite(Demand::Heat) == Demand::Cool);
+    CHECK_TRUE(opposite(Demand::Cool) == Demand::Heat);
+    CHECK_TRUE(opposite(Demand::Neutral) == Demand::Neutral);
+}
+
+static void test_group_standalone() {
+    std::vector<MemberObs> ms = {
+        mk("self", MemberState::SelfKnown, true, Demand::Heat, true, false)};
+    GroupView v = evaluate_group(ms);
+    CHECK_EQ(status_str(v.status), "standalone");
+    CHECK_EQ(v.locked_by, "self");                 // lone running head still shown
+    CHECK_TRUE(v.locked_mode == Demand::Heat);
+}
+
+static void test_group_ok() {
+    std::vector<MemberObs> ms = {
+        mk("self", MemberState::SelfKnown, true, Demand::Heat, true, false),
+        mk("peer", MemberState::Known,     false, Demand::Neutral, false, false)};
+    GroupView v = evaluate_group(ms);
+    CHECK_EQ(status_str(v.status), "ok");
+    CHECK_EQ(v.locked_by, "self");
+    CHECK_TRUE(v.locked_mode == Demand::Heat);
+    CHECK_TRUE(v.conflicts.empty());
+}
+
+static void test_group_conflict_active() {
+    // self holds HEAT but peer is COOL and physically running → self is blocked.
+    std::vector<MemberObs> ms = {
+        mk("self", MemberState::SelfKnown, true, Demand::Heat, false, true),
+        mk("peer", MemberState::Known,     true, Demand::Cool, true,  false)};
+    GroupView v = evaluate_group(ms);
+    CHECK_EQ(status_str(v.status), "conflict");
+    CHECK_TRUE(v.locked_mode == Demand::Cool);
+    CHECK_EQ(v.locked_by, "peer");
+    CHECK_TRUE(v.conflicts.size() == 1);
+    CHECK_EQ(v.conflicts[0].name, "self");
+    CHECK_TRUE(v.conflicts[0].wants == Demand::Heat);
+}
+
+static void test_group_pending_conflict() {
+    // Opposing demands, nobody energized yet.
+    std::vector<MemberObs> ms = {
+        mk("self", MemberState::SelfKnown, true, Demand::Heat, false, false),
+        mk("peer", MemberState::Known,     true, Demand::Cool, false, false)};
+    GroupView v = evaluate_group(ms);
+    CHECK_EQ(status_str(v.status), "pending_conflict");
+    CHECK_TRUE(v.conflicts.size() == 2);  // both sides listed to choose from
+}
+
+static void test_group_indeterminate_unknown() {
+    std::vector<MemberObs> ms = {
+        mk("self", MemberState::SelfKnown, true, Demand::Heat, false, false),
+        mk("peer", MemberState::Unknown,   false, Demand::Neutral, false, false)};
+    GroupView v = evaluate_group(ms);
+    CHECK_EQ(status_str(v.status), "indeterminate");
+    CHECK_TRUE(v.unknown_members.size() == 1);
+    CHECK_EQ(v.unknown_members[0], "peer");
+}
+
+static void test_group_self_blocked_peer_unknown() {
+    // Authoritative STANDBY: self blocked in HEAT while the opposing owner is an
+    // unreachable peer. We must still report a conflict and infer COOL is locked.
+    std::vector<MemberObs> ms = {
+        mk("self", MemberState::SelfKnown, true, Demand::Heat, false, true),
+        mk("peer", MemberState::Unknown,   false, Demand::Neutral, false, false)};
+    GroupView v = evaluate_group(ms);
+    CHECK_EQ(status_str(v.status), "conflict");
+    CHECK_TRUE(v.locked_mode == Demand::Cool);   // opposite of the blocked demand
+    CHECK_TRUE(v.locked_by.empty());             // owner not directly visible
+    CHECK_TRUE(v.conflicts.size() == 1);
+    CHECK_EQ(v.conflicts[0].name, "self");
+}
+
+static void test_group_auto_blind_spot() {
+    std::vector<MemberObs> ms = {
+        mk("self", MemberState::SelfKnown, true, Demand::Cool, true, false),
+        mk("peer", MemberState::Known,     true, Demand::Auto, false, false)};
+    GroupView v = evaluate_group(ms);
+    CHECK_EQ(status_str(v.status), "indeterminate");  // AUTO can't be read → fail safe
+    CHECK_TRUE(!v.warnings.empty());
+}
+
 int main() {
     test_hex_roundtrip();
     test_identity_validation();
@@ -192,6 +290,14 @@ int main() {
     test_add_remove_peer();
     test_ct_equal();
     test_evaluate_claim();
+    test_classify_demand();
+    test_group_standalone();
+    test_group_ok();
+    test_group_conflict_active();
+    test_group_pending_conflict();
+    test_group_indeterminate_unknown();
+    test_group_self_blocked_peer_unknown();
+    test_group_auto_blind_spot();
     if (g_failures == 0) {
         std::printf("OK - all host group-protocol tests passed\n");
         return 0;
