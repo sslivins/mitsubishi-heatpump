@@ -20,3 +20,8 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Host test artifacts
+/host_tests
+test/host/*.exe
+test/host/host_tests
