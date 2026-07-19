@@ -37,6 +37,8 @@ static int g_failures = 0;
 
 using hvac_mqtt::slugify;
 using hvac_mqtt::discovery_object_id;
+using hvac_mqtt::fan_device_to_ha;
+using hvac_mqtt::fan_ha_to_device;
 
 static void test_slugify() {
     // Already-valid names pass through unchanged.
@@ -88,9 +90,39 @@ static void test_discovery_object_id() {
     CHECK_TRUE(discovery_object_id("6dac") != discovery_object_id("e6c8"));
 }
 
+static void test_fan_mode_mapping() {
+    // device -> HA standard names (so the HA frontend draws labelled icons).
+    CHECK_EQ(fan_device_to_ha("AUTO"),  "auto");
+    CHECK_EQ(fan_device_to_ha("QUIET"), "diffuse");
+    CHECK_EQ(fan_device_to_ha("1"),     "low");
+    CHECK_EQ(fan_device_to_ha("2"),     "middle");
+    CHECK_EQ(fan_device_to_ha("3"),     "medium");
+    CHECK_EQ(fan_device_to_ha("4"),     "high");
+    // Empty settings (unit not yet reporting) fall back to auto.
+    CHECK_EQ(fan_device_to_ha(""), "auto");
+
+    // HA name -> native device value (what the heat pump expects).
+    CHECK_EQ(fan_ha_to_device("auto"),    "AUTO");
+    CHECK_EQ(fan_ha_to_device("diffuse"), "QUIET");
+    CHECK_EQ(fan_ha_to_device("low"),     "1");
+    CHECK_EQ(fan_ha_to_device("middle"),  "2");
+    CHECK_EQ(fan_ha_to_device("medium"),  "3");
+    CHECK_EQ(fan_ha_to_device("high"),    "4");
+
+    // Round-trips: every published fan_mode must survive HA->device->HA.
+    for (const char* ha : {"auto", "diffuse", "low", "middle", "medium", "high"})
+        CHECK_EQ(fan_device_to_ha(fan_ha_to_device(ha)), ha);
+
+    // A raw native value coming back on the command topic still maps sanely
+    // (robustness — e.g. a manual publish or older automation).
+    CHECK_EQ(fan_ha_to_device("QUIET"), "QUIET");
+    CHECK_EQ(fan_ha_to_device("1"),     "1");
+}
+
 int main() {
     test_slugify();
     test_discovery_object_id();
+    test_fan_mode_mapping();
     if (g_failures == 0) {
         std::printf("OK - all host topic tests passed\n");
         return 0;

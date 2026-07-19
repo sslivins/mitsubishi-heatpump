@@ -25,4 +25,20 @@ std::string slugify(const std::string& in);
 /// id makes renames update the entity in place.
 std::string discovery_object_id(const std::string& device_uid);
 
+/// Translate a Mitsubishi/CN105 native fan value (AUTO, QUIET, 1..4) to the
+/// Home Assistant *standard* fan-mode name so the HA frontend renders a proper
+/// labelled icon (fan-auto, weather-windy, etc.) instead of a bare number.
+/// Mirrors the gysmo38/mitsubishi2MQTT mapping:
+///   QUIET->diffuse, 1->low, 2->middle, 3->medium, 4->high, everything
+///   else (AUTO, empty, unknown) -> auto. Comparison is case-insensitive; an
+///   unrecognised value is passed through lower-cased.
+std::string fan_device_to_ha(const std::string& device_fan);
+
+/// Inverse of fan_device_to_ha: translate the HA fan-mode name that comes back
+/// on the /fan/set command topic to the native value the heat pump expects.
+///   diffuse->QUIET, low->1, middle->2, medium->3, high->4, auto->AUTO. An
+///   already-native or unrecognised value is passed through upper-cased so a
+///   raw "1".."4"/"AUTO"/"QUIET" still works.
+std::string fan_ha_to_device(const std::string& ha_fan);
+
 }  // namespace hvac_mqtt

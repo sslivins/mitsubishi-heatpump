@@ -118,6 +118,10 @@ void event_handler(void*, esp_event_base_t, int32_t id, void* data) {
             std::string payload(e->data, e->data_len);
             Command::Kind kind;
             if (topic_to_kind(topic, kind) && g_on_command) {
+                // HA sends the standard fan-mode name (auto/diffuse/low/…) on
+                // the fan command topic; translate it back to the heat pump's
+                // native value (AUTO/QUIET/1..4) before dispatching.
+                if (kind == Command::Kind::Fan) payload = fan_ha_to_device(payload);
                 g_on_command(Command{kind, payload});
             }
             break;
@@ -395,7 +399,7 @@ esp_err_t publish_state(const cn105::Settings& s, const cn105::Status& st) {
     cJSON_AddStringToObject(root, "action", ha_action(s, st).c_str());
     cJSON_AddNumberToObject(root, "temperature", s.temperature);
     cJSON_AddNumberToObject(root, "roomTemperature", st.roomTemperature);
-    cJSON_AddStringToObject(root, "fan", s.fan.empty() ? "AUTO" : s.fan.c_str());
+    cJSON_AddStringToObject(root, "fan", fan_device_to_ha(s.fan).c_str());
     cJSON_AddStringToObject(root, "vane", s.vane.empty() ? "AUTO" : s.vane.c_str());
     cJSON_AddBoolToObject(root, "operating", st.operating);
     cJSON_AddNumberToObject(root, "compressorFrequency", st.compressorFrequency);
@@ -479,8 +483,11 @@ esp_err_t publish_discovery(const cn105::Settings& s) {
     cJSON_AddStringToObject(root, "fan_mode_command_topic", t("/fan/set").c_str());
     cJSON_AddStringToObject(root, "fan_mode_state_topic", state_topic.c_str());
     cJSON_AddStringToObject(root, "fan_mode_state_template", "{{ value_json.fan }}");
+    // Publish the HA-standard fan-mode names so the frontend shows labelled
+    // icons; the /state fan field is normalised to these names to match, and
+    // inbound commands are translated back to native values (see event_handler).
     cJSON* fans = cJSON_CreateArray();
-    for (const char* f : {"AUTO", "QUIET", "1", "2", "3", "4"})
+    for (const char* f : {"auto", "diffuse", "low", "middle", "medium", "high"})
         cJSON_AddItemToArray(fans, cJSON_CreateString(f));
     cJSON_AddItemToObject(root, "fan_modes", fans);
 
