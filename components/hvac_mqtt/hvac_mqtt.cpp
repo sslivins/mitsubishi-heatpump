@@ -9,6 +9,7 @@
 /// driver's seeded placeholder values.
 
 #include "hvac_mqtt.h"
+#include "hvac_topics.h"
 
 #include <cstring>
 #include <utility>
@@ -33,28 +34,7 @@ std::string        g_did;   ///< stable HA discovery object_id ("mitsubishi-heat
 StoredSettings     g_settings;          ///< settings the client was started with
 constexpr char     kNvsNs[] = "mqtt";   ///< NVS namespace for persisted settings
 
-// Reduce an arbitrary friendly_name to a segment safe to embed in an MQTT
-// topic. Home Assistant's MQTT discovery only accepts a node_id/object_id that
-// matches [a-zA-Z0-9_-]; any other character (notably a space) makes HA
-// *silently drop* the discovery message, so the entity never appears even
-// though the broker connection is healthy. Disallowed characters are mapped to
-// '_', consecutive separators collapse, and leading/trailing '_' are trimmed.
-// The raw friendly_name is still used verbatim for the HA display name.
-std::string slugify(const std::string& in) {
-    std::string out;
-    out.reserve(in.size());
-    bool prev_sep = false;
-    for (char c : in) {
-        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9') || c == '-' || c == '_';
-        if (ok) { out.push_back(c); prev_sep = false; }
-        else if (!prev_sep) { out.push_back('_'); prev_sep = true; }
-    }
-    const size_t b = out.find_first_not_of('_');
-    if (b == std::string::npos) return "heatpump";  // nothing usable → safe default
-    const size_t e = out.find_last_not_of('_');
-    return out.substr(b, e - b + 1);
-}
+// slugify() and discovery_object_id() live in hvac_topics.cpp (pure, host-tested).
 
 // Read an NVS string key into `out`; leaves `out` unchanged if the key is absent.
 void nvs_get_string(nvs_handle_t h, const char* key, std::string& out) {
@@ -160,7 +140,7 @@ esp_err_t init(const Config& cfg, CommandCallback on_command) {
     // unique_id, so HA dropped one and the entity vanished. The hostname is
     // immutable, so use it for the discovery object_id (state/command topics
     // still track the friendly slug via g_base, preserving the m2MQTT contract).
-    g_did = "mitsubishi-heatpump-" + cfg.device_uid;
+    g_did = discovery_object_id(cfg.device_uid);
 
     std::string lwt_topic = g_base + "/availability";
 

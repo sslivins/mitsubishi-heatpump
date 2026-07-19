@@ -1,0 +1,33 @@
+name: host-tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'components/hvac_mqtt/hvac_topics.cpp'
+      - 'components/hvac_mqtt/include/hvac_topics.h'
+      - 'test/host/**'
+      - '.github/workflows/host-tests.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'components/hvac_mqtt/hvac_topics.cpp'
+      - 'components/hvac_mqtt/include/hvac_topics.h'
+      - 'test/host/**'
+      - '.github/workflows/host-tests.yml'
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run host unit tests
+        shell: bash
+        run: |
+          g++ -std=c++17 -Wall -Wextra \
+            -I components/hvac_mqtt/include \
+            components/hvac_mqtt/hvac_topics.cpp \
+            test/host/test_hvac_topics.cpp \
+            -o host_tests
+          ./host_tests
