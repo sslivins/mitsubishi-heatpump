@@ -77,4 +77,25 @@ bool add_peer(std::vector<std::string>& uids, const std::string& uid,
 /// Remove @p uid from @p uids if present. Returns true if the list changed.
 bool remove_peer(std::vector<std::string>& uids, const std::string& uid);
 
+/// Constant-time string equality — compares every byte so a timing side-channel
+/// can't reveal how many leading characters of a pairing code matched. Unequal
+/// lengths return false (but still scan @p a fully).
+bool ct_equal(const std::string& a, const std::string& b);
+
+/// Outcome of validating an inbound pairing claim against the owner's active
+/// code, factored out of the (time/RNG-bearing) session so it is host-testable.
+enum class ClaimDecision {
+    Ok,            ///< code matches an active, unexpired, non-locked session.
+    NoActiveCode,  ///< no pairing window is open.
+    Expired,       ///< the window's TTL elapsed.
+    LockedOut,     ///< too many wrong attempts; the code is burned.
+    BadCode,       ///< wrong code (caller decrements the attempt counter).
+};
+
+/// Decide a claim from the session's observable state. Order matters: a closed
+/// or expired window is reported before any code comparison, and lockout is
+/// checked before accepting a match so a burned code can never succeed.
+ClaimDecision evaluate_claim(bool active, bool expired, bool code_matches,
+                             int attempts_left);
+
 }  // namespace hvac_group

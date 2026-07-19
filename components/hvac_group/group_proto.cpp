@@ -144,4 +144,25 @@ bool remove_peer(std::vector<std::string>& uids, const std::string& uid) {
     return false;
 }
 
+bool ct_equal(const std::string& a, const std::string& b) {
+    // Fold the length difference into the accumulator and always scan all of
+    // `a`, so neither the running result nor the loop trip-count reveals where
+    // (or whether) the strings first diverge.
+    uint8_t diff = static_cast<uint8_t>(a.size() ^ b.size());
+    for (size_t i = 0; i < a.size(); ++i) {
+        const char bc = (i < b.size()) ? b[i] : 0;
+        diff |= static_cast<uint8_t>(a[i] ^ bc);
+    }
+    return diff == 0 && a.size() == b.size();
+}
+
+ClaimDecision evaluate_claim(bool active, bool expired, bool code_matches,
+                             int attempts_left) {
+    if (!active)             return ClaimDecision::NoActiveCode;
+    if (expired)             return ClaimDecision::Expired;
+    if (attempts_left <= 0)  return ClaimDecision::LockedOut;
+    if (code_matches)        return ClaimDecision::Ok;
+    return ClaimDecision::BadCode;
+}
+
 }  // namespace hvac_group

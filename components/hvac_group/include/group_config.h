@@ -13,6 +13,8 @@
 
 #include "esp_err.h"
 
+#include "group_proto.h"
+
 namespace hvac_group {
 
 /// Everything that defines this head's participation in a compressor group.
@@ -65,5 +67,53 @@ std::string hmac_hex(const std::string& message);
 
 /// Constant-time comparison of an expected HMAC hex against a provided one.
 bool hmac_verify(const std::string& message, const std::string& provided_hex);
+
+// ── Pairing (Phase 1b) ─────────────────────────────────────────────────────
+
+/// Seconds a pairing code stays valid, and how many wrong attempts burn it.
+constexpr int kPairingTtlSeconds = 120;
+constexpr int kPairingMaxAttempts = 5;
+
+/// Owner side: ensure this head has a group (generating a random group_id +
+/// group_secret if it was standalone), then open a single-use pairing window
+/// with a fresh 6-digit code. @p label sets the group label only when a new
+/// group is formed. The code is returned to display to the user; it lives in
+/// RAM (never persisted) and expires after kPairingTtlSeconds.
+esp_err_t pairing_start(const std::string& label, std::string& out_code);
+
+/// Cancel any open pairing window.
+void pairing_stop();
+
+struct PairingStatus {
+    bool active = false;
+    int  seconds_left = 0;
+    int  attempts_left = 0;
+};
+
+/// Current pairing-window state (an expired window reports inactive).
+PairingStatus pairing_status();
+
+/// Result of an inbound claim; on decision==Ok the out-params carry exactly
+/// what the joining head needs to adopt the group.
+struct ClaimOutcome {
+    ClaimDecision decision = ClaimDecision::NoActiveCode;
+    std::string group_id;
+    std::string group_label;
+    std::string group_secret;
+    std::vector<std::string> members;  ///< owner uid + existing peers (not joiner)
+};
+
+/// Owner side: validate an inbound pairing claim from @p joiner_uid. On success
+/// enrolls the joiner into the local peer table (persisted), burns the code,
+/// and fills the outcome with the group_id/label/secret/members. A wrong code
+/// decrements the attempt counter (and burns the code at zero).
+ClaimOutcome pairing_claim(const std::string& code, const std::string& joiner_uid);
+
+/// Joiner side: adopt a group from a successful claim response. Validates all
+/// fields, stores group_id/label/secret, and sets the peer list to @p members
+/// minus this device's own uid. Returns ESP_ERR_INVALID_ARG on malformed input.
+esp_err_t join_group(const std::string& group_id, const std::string& label,
+                     const std::string& secret,
+                     const std::vector<std::string>& members);
 
 }  // namespace hvac_group
