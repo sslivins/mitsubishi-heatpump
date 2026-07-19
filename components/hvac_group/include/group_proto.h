@@ -98,4 +98,90 @@ enum class ClaimDecision {
 ClaimDecision evaluate_claim(bool active, bool expired, bool code_matches,
                              int attempts_left);
 
+// ── Conflict / lock model (Phase 2) ─────────────────────────────────────────
+//
+// Pure evaluation of a shared-compressor group from a set of per-member
+// observations. The refrigerant *claim* is the retained power+mode (survives
+// idle-at-setpoint/min-off/defrost); `operating` marks who is physically
+// running the compressor now; STANDBY (+IDLE, !operating) is the hardware's
+// authoritative "my commanded mode is being blocked" signal.
+
+/// The refrigerant direction a head is asking the shared compressor for.
+enum class Demand {
+    Neutral,  ///< OFF or FAN — draws nothing from the compressor.
+    Heat,
+    Cool,     ///< COOL and DRY both draw cooling.
+    Auto,     ///< AUTO — direction is unknowable over CN105 (a blind spot).
+};
+
+/// Reachability/compatibility of a member's observation.
+enum class MemberState {
+    SelfKnown,     ///< this device (always trustworthy).
+    Known,         ///< a peer that answered with a fresh, compatible snapshot.
+    Unknown,       ///< an enrolled peer that didn't answer / stale — may still
+                   ///< be holding the compressor, so treated as fail-safe.
+    Incompatible,  ///< answered but with an incompatible protocol version.
+};
+
+/// One member's observed claim + physical state, as fed to evaluate_group.
+struct MemberObs {
+    std::string uid;
+    std::string name;
+    MemberState state = MemberState::Unknown;
+    bool        power_on = false;
+    Demand      demand = Demand::Neutral;   ///< classified from power+mode.
+    bool        active_now = false;         ///< operating==true (running now).
+    bool        standby = false;            ///< STANDBY+IDLE+!operating (blocked).
+};
+
+/// Overall group status for the computed view.
+enum class GroupStatus {
+    Standalone,       ///< no enrolled peers — coordination disabled.
+    Ok,               ///< no conflict; every enrolled peer accounted for.
+    PendingConflict,  ///< opposing demands but nobody physically owns it yet.
+    Conflict,         ///< opposing demands and the compressor is serving one.
+    Indeterminate,    ///< can't confirm "no conflict" (a peer is unknown/incompat).
+};
+
+/// A member whose demand is being (or about to be) blocked.
+struct ConflictEntry {
+    std::string uid;
+    std::string name;
+    Demand      wants = Demand::Neutral;
+};
+
+/// Computed, UI-ready view of the group.
+struct GroupView {
+    GroupStatus status = GroupStatus::Standalone;
+    Demand      locked_mode = Demand::Neutral;  ///< direction the compressor is serving.
+    std::string locked_by;       ///< name of the head physically holding it ("" if unknown).
+    std::string locked_by_uid;
+    std::vector<ConflictEntry>   conflicts;        ///< blocked / opposing members.
+    std::vector<std::string>     unknown_members;  ///< names of unreachable peers.
+    std::vector<std::string>     warnings;         ///< human-readable caveats.
+};
+
+/// Classify a head's refrigerant claim from its retained power + mode strings
+/// (case-insensitive). OFF/FAN → Neutral, HEAT → Heat, COOL/DRY → Cool,
+/// AUTO → Auto, anything unrecognized → Neutral (fail safe).
+Demand classify_demand(const std::string& power, const std::string& mode);
+
+/// The opposing refrigerant direction (Heat↔Cool; Neutral/Auto map to Neutral).
+Demand opposite(Demand d);
+
+/// Short uppercase label for a demand (HEAT/COOL/OFF/AUTO), for JSON/UI.
+const char* demand_str(Demand d);
+
+/// Machine-readable status token (standalone/ok/pending_conflict/conflict/
+/// indeterminate), matching the /api/group contract.
+const char* status_str(GroupStatus s);
+
+/// Compute the group view from all members. By convention @p members[0] is this
+/// device (state SelfKnown). With no peers the result is Standalone. A retained
+/// opposing pair is a Conflict once someone is active_now (else PendingConflict);
+/// a SelfKnown/Known member in STANDBY is an authoritative Conflict even when the
+/// opposing owner isn't directly visible. Any Unknown/Incompatible peer downgrades
+/// an otherwise-Ok view to Indeterminate (never masks a detected conflict).
+GroupView evaluate_group(const std::vector<MemberObs>& members);
+
 }  // namespace hvac_group

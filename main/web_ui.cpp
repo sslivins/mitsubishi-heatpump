@@ -648,6 +648,37 @@ esp_err_t handle_group_get(httpd_req_t* req) {
     hvac_group::GroupConfig g = hvac_group::get();
     const bool grouped = hvac_group::in_group();
 
+    // Build this head's observation from live CN105 state.
+    cn105::Settings st  = s_hooks.get_settings ? s_hooks.get_settings() : cn105::Settings{};
+    cn105::Status   sta = s_hooks.get_status   ? s_hooks.get_status()   : cn105::Status{};
+
+    hvac_group::MemberObs self_obs;
+    self_obs.uid        = hvac_group::self_uid();
+    self_obs.name       = wifi::device_display_name();
+    self_obs.state      = hvac_group::MemberState::SelfKnown;
+    self_obs.demand     = hvac_group::classify_demand(st.power, st.mode);
+    self_obs.power_on   = (self_obs.demand != hvac_group::Demand::Neutral) ||
+                          (st.power == "ON");
+    self_obs.active_now = sta.operating;
+    // STANDBY (+ IDLE + !operating) is the hardware's "my mode is being blocked"
+    // signal — the authoritative conflict indicator (see design doc).
+    self_obs.standby    = (sta.subMode == "STANDBY") && (sta.stage == "IDLE") &&
+                          !sta.operating;
+
+    std::vector<hvac_group::MemberObs> members;
+    members.push_back(self_obs);
+    // Peers are enrolled-but-unpolled until Phase 2b adds signed state fetch, so
+    // they are Unknown here (which correctly renders the group Indeterminate).
+    for (const auto& uid : g.peers) {
+        hvac_group::MemberObs m;
+        m.uid   = uid;
+        m.name  = uid;  // no directory yet; show the uid
+        m.state = hvac_group::MemberState::Unknown;
+        members.push_back(m);
+    }
+
+    hvac_group::GroupView view = hvac_group::evaluate_group(members);
+
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "group_id", g.group_id.c_str());
     cJSON_AddStringToObject(root, "group_label", g.group_label.c_str());
@@ -655,21 +686,57 @@ esp_err_t handle_group_get(httpd_req_t* req) {
     cJSON_AddNumberToObject(root, "protocol_version", hvac_group::kProtocolVersion);
 
     cJSON* self = cJSON_CreateObject();
-    cJSON_AddStringToObject(self, "uid", hvac_group::self_uid().c_str());
-    cJSON_AddStringToObject(self, "name", wifi::device_display_name().c_str());
+    cJSON_AddStringToObject(self, "uid", self_obs.uid.c_str());
+    cJSON_AddStringToObject(self, "name", self_obs.name.c_str());
+    cJSON_AddStringToObject(self, "configured_demand", hvac_group::demand_str(self_obs.demand));
+    cJSON_AddBoolToObject(self, "operating", self_obs.active_now);
+    cJSON_AddBoolToObject(self, "standby", self_obs.standby);
     cJSON_AddItemToObject(root, "self", self);
 
-    cJSON* members = cJSON_CreateArray();
-    for (const auto& uid : g.peers) {
-        cJSON* m = cJSON_CreateObject();
-        cJSON_AddStringToObject(m, "uid", uid.c_str());
-        cJSON_AddStringToObject(m, "state", "unknown");  // polling not yet implemented
-        cJSON_AddItemToArray(members, m);
+    cJSON* jmembers = cJSON_CreateArray();
+    for (size_t i = 1; i < members.size(); ++i) {  // skip self at [0]
+        const auto& m = members[i];
+        cJSON* jm = cJSON_CreateObject();
+        cJSON_AddStringToObject(jm, "uid", m.uid.c_str());
+        cJSON_AddStringToObject(jm, "name", m.name.c_str());
+        cJSON_AddStringToObject(jm, "state",
+            m.state == hvac_group::MemberState::Known        ? "known"
+          : m.state == hvac_group::MemberState::Incompatible ? "incompatible"
+                                                             : "unknown");
+        if (m.state == hvac_group::MemberState::Known)
+            cJSON_AddStringToObject(jm, "configured_demand", hvac_group::demand_str(m.demand));
+        cJSON_AddItemToArray(jmembers, jm);
     }
-    cJSON_AddItemToObject(root, "members", members);
+    cJSON_AddItemToObject(root, "members", jmembers);
     cJSON_AddNumberToObject(root, "member_count",
                             grouped ? static_cast<int>(g.peers.size()) + 1 : 0);
-    cJSON_AddStringToObject(root, "status", grouped ? "indeterminate" : "standalone");
+
+    cJSON_AddStringToObject(root, "status", hvac_group::status_str(view.status));
+    if (view.locked_mode != hvac_group::Demand::Neutral)
+        cJSON_AddStringToObject(root, "locked_mode", hvac_group::demand_str(view.locked_mode));
+    else
+        cJSON_AddNullToObject(root, "locked_mode");
+    cJSON_AddStringToObject(root, "locked_by", view.locked_by.c_str());
+
+    cJSON* jconf = cJSON_CreateArray();
+    for (const auto& c : view.conflicts) {
+        cJSON* jc = cJSON_CreateObject();
+        cJSON_AddStringToObject(jc, "uid", c.uid.c_str());
+        cJSON_AddStringToObject(jc, "name", c.name.c_str());
+        cJSON_AddStringToObject(jc, "wants", hvac_group::demand_str(c.wants));
+        cJSON_AddItemToArray(jconf, jc);
+    }
+    cJSON_AddItemToObject(root, "conflicts", jconf);
+
+    cJSON* junk = cJSON_CreateArray();
+    for (const auto& n : view.unknown_members)
+        cJSON_AddItemToArray(junk, cJSON_CreateString(n.c_str()));
+    cJSON_AddItemToObject(root, "unknown_members", junk);
+
+    cJSON* jwarn = cJSON_CreateArray();
+    for (const auto& w : view.warnings)
+        cJSON_AddItemToArray(jwarn, cJSON_CreateString(w.c_str()));
+    cJSON_AddItemToObject(root, "warnings", jwarn);
 
     char* str = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
