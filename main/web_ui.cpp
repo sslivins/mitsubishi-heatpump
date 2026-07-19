@@ -12,6 +12,7 @@
 
 #include "esp_log.h"
 #include "esp_http_server.h"
+#include "esp_http_client.h"
 #include "esp_app_desc.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -678,6 +679,294 @@ esp_err_t handle_group_get(httpd_req_t* req) {
     return ESP_OK;
 }
 
+// Send a small JSON error body with an explicit HTTP status line.
+static esp_err_t send_json_error(httpd_req_t* req, const char* status,
+                                 const char* message) {
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, status);
+    char out[128];
+    snprintf(out, sizeof(out), "{\"error\":\"%s\"}", message);
+    return httpd_resp_sendstr(req, out);
+}
+
+// ── POST /api/group/pair/start ─ owner opens a pairing window (admin) ───
+esp_err_t handle_group_pair_start(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    // Optional {label} names a freshly-formed group.
+    std::string label;
+    if (req->content_len > 0) {
+        char* body = recv_body(req);
+        if (body) {
+            cJSON* json = cJSON_Parse(body);
+            free(body);
+            if (json) {
+                const cJSON* jl = cJSON_GetObjectItem(json, "label");
+                if (jl && cJSON_IsString(jl)) label = jl->valuestring;
+                cJSON_Delete(json);
+            }
+        }
+    }
+
+    std::string code;
+    if (hvac_group::pairing_start(label, code) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "could not start pairing");
+        return ESP_FAIL;
+    }
+    hvac_group::GroupConfig g = hvac_group::get();
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "code", code.c_str());
+    cJSON_AddNumberToObject(root, "seconds_left", hvac_group::kPairingTtlSeconds);
+    cJSON_AddNumberToObject(root, "attempts_left", hvac_group::kPairingMaxAttempts);
+    cJSON_AddStringToObject(root, "group_id", g.group_id.c_str());
+    cJSON_AddStringToObject(root, "group_label", g.group_label.c_str());
+    char* str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// ── POST /api/group/pair/stop ─ owner cancels the window (admin) ────────
+esp_err_t handle_group_pair_stop(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    hvac_group::pairing_stop();
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"stopped\"}");
+}
+
+// ── GET /api/group/pair/status ─ owner polls the window (admin) ─────────
+esp_err_t handle_group_pair_status(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    hvac_group::PairingStatus st = hvac_group::pairing_status();
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "active", st.active);
+    cJSON_AddNumberToObject(root, "seconds_left", st.seconds_left);
+    cJSON_AddNumberToObject(root, "attempts_left", st.attempts_left);
+    char* str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// ── POST /api/group/pair/claim ─ joiner presents the code (NO auth) ─────
+// The 6-digit code IS the authenticator here, so this endpoint intentionally
+// bypasses the session gate (like /api/login). A correct claim returns the
+// group secret, so constant-time checking + lockout live in pairing_claim().
+esp_err_t handle_group_pair_claim(httpd_req_t* req) {
+    set_cors(req);
+    char* body = recv_body(req);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
+        return ESP_FAIL;
+    }
+    cJSON* json = cJSON_Parse(body);
+    free(body);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    const cJSON* juid  = cJSON_GetObjectItem(json, "joiner_uid");
+    const cJSON* jcode = cJSON_GetObjectItem(json, "code");
+    std::string joiner = (juid && cJSON_IsString(juid)) ? juid->valuestring : "";
+    std::string code   = (jcode && cJSON_IsString(jcode)) ? jcode->valuestring : "";
+    cJSON_Delete(json);
+
+    hvac_group::ClaimOutcome oc = hvac_group::pairing_claim(code, joiner);
+    switch (oc.decision) {
+        case hvac_group::ClaimDecision::NoActiveCode:
+            return send_json_error(req, "409 Conflict", "no active pairing");
+        case hvac_group::ClaimDecision::Expired:
+            return send_json_error(req, "410 Gone", "code expired");
+        case hvac_group::ClaimDecision::LockedOut:
+            return send_json_error(req, "429 Too Many Requests", "locked out");
+        case hvac_group::ClaimDecision::BadCode:
+            return send_json_error(req, "401 Unauthorized", "invalid code");
+        case hvac_group::ClaimDecision::Ok:
+            break;
+    }
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "group_id", oc.group_id.c_str());
+    cJSON_AddStringToObject(root, "group_label", oc.group_label.c_str());
+    cJSON_AddStringToObject(root, "group_secret", oc.group_secret.c_str());
+    cJSON* members = cJSON_CreateArray();
+    for (const auto& uid : oc.members)
+        cJSON_AddItemToArray(members, cJSON_CreateString(uid.c_str()));
+    cJSON_AddItemToObject(root, "members", members);
+    char* str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// ── POST /api/group/pair/join ─ joiner reaches out to an owner (admin) ──
+// Body: {owner_host, code}. Performs an outbound POST to the owner's
+// /api/group/pair/claim, then adopts the returned group locally.
+esp_err_t handle_group_pair_join(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    char* body = recv_body(req);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
+        return ESP_FAIL;
+    }
+    cJSON* json = cJSON_Parse(body);
+    free(body);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    const cJSON* jhost = cJSON_GetObjectItem(json, "owner_host");
+    const cJSON* jcode = cJSON_GetObjectItem(json, "code");
+    std::string host = (jhost && cJSON_IsString(jhost)) ? jhost->valuestring : "";
+    std::string code = (jcode && cJSON_IsString(jcode)) ? jcode->valuestring : "";
+    cJSON_Delete(json);
+    if (host.empty() || code.empty()) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "owner_host and code required");
+        return ESP_FAIL;
+    }
+
+    // Build the claim request body.
+    cJSON* reqbody = cJSON_CreateObject();
+    cJSON_AddStringToObject(reqbody, "joiner_uid", hvac_group::self_uid().c_str());
+    cJSON_AddStringToObject(reqbody, "code", code.c_str());
+    char* reqstr = cJSON_PrintUnformatted(reqbody);
+    cJSON_Delete(reqbody);
+
+    std::string url = "http://" + host + "/api/group/pair/claim";
+    esp_http_client_config_t cfg = {};
+    cfg.url = url.c_str();
+    cfg.method = HTTP_METHOD_POST;
+    cfg.timeout_ms = 8000;
+    esp_http_client_handle_t cli = esp_http_client_init(&cfg);
+    if (!cli) {
+        cJSON_free(reqstr);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "http init failed");
+        return ESP_FAIL;
+    }
+    esp_http_client_set_header(cli, "Content-Type", "application/json");
+    esp_http_client_set_post_field(cli, reqstr, strlen(reqstr));
+
+    esp_err_t oerr = esp_http_client_open(cli, strlen(reqstr));
+    if (oerr != ESP_OK) {
+        cJSON_free(reqstr);
+        esp_http_client_cleanup(cli);
+        return send_json_error(req, "502 Bad Gateway", "could not reach owner");
+    }
+    esp_http_client_write(cli, reqstr, strlen(reqstr));
+    cJSON_free(reqstr);
+    int clen = esp_http_client_fetch_headers(cli);
+    int status = esp_http_client_get_status_code(cli);
+
+    // Read the response body (bounded).
+    std::string resp;
+    char rbuf[256];
+    int cap = (clen > 0 && clen < 2048) ? clen : 2048;
+    while ((int)resp.size() < cap) {
+        int r = esp_http_client_read(cli, rbuf, sizeof(rbuf));
+        if (r <= 0) break;
+        resp.append(rbuf, r);
+    }
+    esp_http_client_close(cli);
+    esp_http_client_cleanup(cli);
+
+    if (status != 200) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "owner rejected claim (HTTP %d)", status);
+        return send_json_error(req, "502 Bad Gateway", msg);
+    }
+
+    cJSON* rj = cJSON_Parse(resp.c_str());
+    if (!rj) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "bad owner response");
+        return ESP_FAIL;
+    }
+    const cJSON* gid    = cJSON_GetObjectItem(rj, "group_id");
+    const cJSON* glabel = cJSON_GetObjectItem(rj, "group_label");
+    const cJSON* gsec   = cJSON_GetObjectItem(rj, "group_secret");
+    const cJSON* gmem   = cJSON_GetObjectItem(rj, "members");
+    std::vector<std::string> members;
+    if (gmem && cJSON_IsArray(gmem)) {
+        cJSON* it = nullptr;
+        cJSON_ArrayForEach(it, gmem)
+            if (cJSON_IsString(it)) members.push_back(it->valuestring);
+    }
+    std::string group_id = (gid && cJSON_IsString(gid)) ? gid->valuestring : "";
+    std::string label    = (glabel && cJSON_IsString(glabel)) ? glabel->valuestring : "";
+    std::string secret   = (gsec && cJSON_IsString(gsec)) ? gsec->valuestring : "";
+    cJSON_Delete(rj);
+
+    if (hvac_group::join_group(group_id, label, secret, members) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "could not adopt group");
+        return ESP_FAIL;
+    }
+
+    hvac_group::GroupConfig g = hvac_group::get();
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", "joined");
+    cJSON_AddStringToObject(root, "group_id", g.group_id.c_str());
+    cJSON_AddStringToObject(root, "group_label", g.group_label.c_str());
+    cJSON_AddNumberToObject(root, "member_count", static_cast<int>(g.peers.size()) + 1);
+    char* str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// ── POST /api/group/leave ─ drop out of the group (admin) ──────────────
+esp_err_t handle_group_leave(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    hvac_group::pairing_stop();
+    if (hvac_group::leave_group() != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS write failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"left\"}");
+}
+
+// ── POST /api/group/label ─ rename the group (admin) ───────────────────
+esp_err_t handle_group_label(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    char* body = recv_body(req);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
+        return ESP_FAIL;
+    }
+    cJSON* json = cJSON_Parse(body);
+    free(body);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    const cJSON* jl = cJSON_GetObjectItem(json, "label");
+    std::string label = (jl && cJSON_IsString(jl)) ? jl->valuestring : "";
+    cJSON_Delete(json);
+
+    esp_err_t err = hvac_group::set_label(label);
+    if (err == ESP_ERR_INVALID_STATE)
+        return send_json_error(req, "409 Conflict", "not in a group");
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS write failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+}
+
 esp_err_t handle_wifi_get(httpd_req_t* req) {
     set_cors(req);
     REQUIRE_ADMIN(req);
@@ -954,7 +1243,7 @@ esp_err_t init(const Hooks& hooks) {
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn = httpd_uri_match_wildcard;
-    cfg.max_uri_handlers = 28;
+    cfg.max_uri_handlers = 36;
     cfg.stack_size = 8192;
     // The default 7 sockets reserve 3 for internal use, leaving only 4 for
     // clients — fewer than the 6 keep-alive connections a single browser tab
@@ -990,6 +1279,13 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/mqtt",                HTTP_POST,     handle_mqtt_post,      nullptr},
         {"/api/device",              HTTP_POST,     handle_device_post,    nullptr},
         {"/api/group",               HTTP_GET,      handle_group_get,      nullptr},
+        {"/api/group/pair/start",    HTTP_POST,     handle_group_pair_start,  nullptr},
+        {"/api/group/pair/stop",     HTTP_POST,     handle_group_pair_stop,   nullptr},
+        {"/api/group/pair/status",   HTTP_GET,      handle_group_pair_status, nullptr},
+        {"/api/group/pair/claim",    HTTP_POST,     handle_group_pair_claim,  nullptr},
+        {"/api/group/pair/join",     HTTP_POST,     handle_group_pair_join,   nullptr},
+        {"/api/group/leave",         HTTP_POST,     handle_group_leave,       nullptr},
+        {"/api/group/label",         HTTP_POST,     handle_group_label,       nullptr},
         {"/api/wifi",                HTTP_GET,      handle_wifi_get,       nullptr},
         {"/api/scan",                HTTP_GET,      handle_scan,           nullptr},
         {"/api/wifi",                HTTP_POST,     handle_wifi_post,      nullptr},

@@ -9,6 +9,7 @@
 
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "mbedtls/md.h"
@@ -26,6 +27,27 @@ constexpr char kNvsNs[] = "hvgroup";
 SemaphoreHandle_t s_mtx = nullptr;
 GroupConfig       s_cfg;
 std::string       s_self_uid;
+
+// Owner-side pairing window. Lives only in RAM (never persisted) and is guarded
+// by s_mtx like the config cache.
+struct PairSession {
+    bool        active = false;
+    std::string code;
+    int64_t     expires_us = 0;
+    int         attempts_left = 0;
+};
+PairSession s_pair;
+
+// Keep a group label printable and bounded before it hits NVS.
+std::string sanitize_label(const std::string& in) {
+    std::string out;
+    for (char ch : in) {
+        if (static_cast<unsigned char>(ch) < 0x20 || ch == 0x7f) continue;
+        out.push_back(ch);
+        if (out.size() >= 48) break;
+    }
+    return out;
+}
 
 struct Lock {
     Lock()  { if (s_mtx) xSemaphoreTake(s_mtx, portMAX_DELAY); }
@@ -136,7 +158,7 @@ esp_err_t set_label(const std::string& label) {
     Lock lk;
     if (s_cfg.group_id.empty()) return ESP_ERR_INVALID_STATE;
     GroupConfig c = s_cfg;
-    c.group_label = label;
+    c.group_label = sanitize_label(label);
     esp_err_t err = persist_locked(c);
     if (err == ESP_OK) s_cfg = c;
     return err;
@@ -185,6 +207,125 @@ bool hmac_verify(const std::string& message, const std::string& provided_hex) {
     for (size_t i = 0; i < expected.size(); ++i)
         diff |= static_cast<uint8_t>(expected[i] ^ provided_hex[i]);
     return diff == 0;
+}
+
+esp_err_t pairing_start(const std::string& label, std::string& out_code) {
+    Lock lk;
+    // Form a group on first pairing: mint a random id + secret so the owner has
+    // something to hand out. An already-grouped head keeps its existing id.
+    if (!is_valid_group_id(s_cfg.group_id) || !is_valid_group_secret(s_cfg.group_secret)) {
+        GroupConfig c;
+        c.group_id     = generate_group_id();
+        c.group_secret = generate_group_secret();
+        c.group_label  = sanitize_label(label);
+        esp_err_t err = persist_locked(c);
+        if (err != ESP_OK) return err;
+        s_cfg = c;
+    }
+    s_pair.active        = true;
+    s_pair.code          = generate_pairing_code();
+    s_pair.expires_us    = esp_timer_get_time() +
+                           static_cast<int64_t>(kPairingTtlSeconds) * 1000000;
+    s_pair.attempts_left = kPairingMaxAttempts;
+    out_code = s_pair.code;
+    ESP_LOGI(TAG, "pairing window open (%ds, %d attempts)",
+             kPairingTtlSeconds, kPairingMaxAttempts);
+    return ESP_OK;
+}
+
+void pairing_stop() {
+    Lock lk;
+    s_pair = PairSession{};
+}
+
+PairingStatus pairing_status() {
+    Lock lk;
+    PairingStatus st;
+    if (!s_pair.active) return st;
+    const int64_t now = esp_timer_get_time();
+    if (now >= s_pair.expires_us) {  // lazily reap an expired window
+        s_pair = PairSession{};
+        return st;
+    }
+    st.active        = true;
+    st.seconds_left  = static_cast<int>((s_pair.expires_us - now) / 1000000);
+    st.attempts_left = s_pair.attempts_left;
+    return st;
+}
+
+ClaimOutcome pairing_claim(const std::string& code, const std::string& joiner_uid) {
+    Lock lk;
+    ClaimOutcome out;
+
+    const int64_t now     = esp_timer_get_time();
+    const bool    active  = s_pair.active;
+    const bool    expired = active && now >= s_pair.expires_us;
+    const bool    matches = active && ct_equal(code, s_pair.code);
+
+    out.decision = evaluate_claim(active, expired, matches, s_pair.attempts_left);
+
+    switch (out.decision) {
+        case ClaimDecision::Ok: {
+            // A malformed joiner uid can't be enrolled; treat as a bad code so we
+            // don't leak the group secret to a garbage identity.
+            if (!is_valid_uid(joiner_uid) || joiner_uid == s_self_uid) {
+                out.decision = ClaimDecision::BadCode;
+                if (--s_pair.attempts_left <= 0) s_pair = PairSession{};
+                break;
+            }
+            // The joiner needs everyone already in the group: this owner plus any
+            // existing peers (computed BEFORE we add the joiner).
+            out.group_id     = s_cfg.group_id;
+            out.group_label  = s_cfg.group_label;
+            out.group_secret = s_cfg.group_secret;
+            out.members.push_back(s_self_uid);
+            for (const auto& p : s_cfg.peers) out.members.push_back(p);
+
+            GroupConfig c = s_cfg;
+            add_peer(c.peers, joiner_uid, s_self_uid);
+            if (persist_locked(c) != ESP_OK) {
+                // Persist failed: report as if no code was active and leave the
+                // window open so a retry can succeed. Don't hand out the secret.
+                out = ClaimOutcome{};
+                out.decision = ClaimDecision::NoActiveCode;
+                break;
+            }
+            s_cfg  = c;
+            s_pair = PairSession{};  // single-use: burn on success
+            ESP_LOGI(TAG, "enrolled peer %s", joiner_uid.c_str());
+            break;
+        }
+        case ClaimDecision::BadCode:
+            if (--s_pair.attempts_left <= 0) s_pair = PairSession{};
+            break;
+        case ClaimDecision::Expired:
+        case ClaimDecision::LockedOut:
+            s_pair = PairSession{};  // window is dead; clear it
+            break;
+        case ClaimDecision::NoActiveCode:
+            break;
+    }
+    return out;
+}
+
+esp_err_t join_group(const std::string& group_id, const std::string& label,
+                     const std::string& secret,
+                     const std::vector<std::string>& members) {
+    if (!is_valid_group_id(group_id) || !is_valid_group_secret(secret))
+        return ESP_ERR_INVALID_ARG;
+
+    const std::string self = self_uid();  // takes the lock itself; call before Lock
+
+    GroupConfig c;
+    c.group_id     = group_id;
+    c.group_label  = sanitize_label(label);
+    c.group_secret = secret;
+    for (const auto& m : members) {
+        if (m == self) continue;
+        if (!is_valid_uid(m)) return ESP_ERR_INVALID_ARG;
+        add_peer(c.peers, m, self);
+    }
+    return save(c);  // save() validates + persists + updates cache under the lock
 }
 
 }  // namespace hvac_group

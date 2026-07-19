@@ -163,12 +163,35 @@ static void test_add_remove_peer() {
     CHECK_EQ(uids[0], "aa11");
 }
 
+static void test_ct_equal() {
+    CHECK_TRUE(ct_equal("482915", "482915"));
+    CHECK_FALSE(ct_equal("482915", "482910"));
+    CHECK_FALSE(ct_equal("482915", "48291"));   // different length
+    CHECK_FALSE(ct_equal("", "0"));
+    CHECK_TRUE(ct_equal("", ""));
+}
+
+static void test_evaluate_claim() {
+    // Happy path.
+    CHECK_TRUE(evaluate_claim(true, false, true, 5) == ClaimDecision::Ok);
+    // Window state is reported before any code comparison.
+    CHECK_TRUE(evaluate_claim(false, false, true, 5) == ClaimDecision::NoActiveCode);
+    CHECK_TRUE(evaluate_claim(true, true, true, 5) == ClaimDecision::Expired);
+    // A burned code can never succeed, even with the right digits.
+    CHECK_TRUE(evaluate_claim(true, false, true, 0) == ClaimDecision::LockedOut);
+    CHECK_TRUE(evaluate_claim(true, false, false, 0) == ClaimDecision::LockedOut);
+    // Wrong code with attempts remaining.
+    CHECK_TRUE(evaluate_claim(true, false, false, 3) == ClaimDecision::BadCode);
+}
+
 int main() {
     test_hex_roundtrip();
     test_identity_validation();
     test_signing_string();
     test_peer_serialization();
     test_add_remove_peer();
+    test_ct_equal();
+    test_evaluate_claim();
     if (g_failures == 0) {
         std::printf("OK - all host group-protocol tests passed\n");
         return 0;
