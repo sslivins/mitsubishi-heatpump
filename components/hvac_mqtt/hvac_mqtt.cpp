@@ -29,6 +29,7 @@ esp_mqtt_client_handle_t g_client = nullptr;
 bool               g_connected = false;
 std::string        g_base;  ///< "<base_topic>/<slug>"
 std::string        g_slug;  ///< friendly_name reduced to a safe topic segment
+std::string        g_did;   ///< stable HA discovery object_id ("mitsubishi-heatpump-<uid>")
 StoredSettings     g_settings;          ///< settings the client was started with
 constexpr char     kNvsNs[] = "mqtt";   ///< NVS namespace for persisted settings
 
@@ -152,6 +153,14 @@ esp_err_t init(const Config& cfg, CommandCallback on_command) {
     g_on_command = std::move(on_command);
     g_slug = slugify(cfg.friendly_name);
     g_base = cfg.base_topic + "/" + g_slug;
+    // The HA discovery config *topic* must be stable across friendly_name
+    // renames: it is HA's registry key for the entity. Deriving it from the
+    // (mutable) friendly slug meant a rename published a new retained config at
+    // a new topic while the old one lingered — two configs with the same
+    // unique_id, so HA dropped one and the entity vanished. The hostname is
+    // immutable, so use it for the discovery object_id (state/command topics
+    // still track the friendly slug via g_base, preserving the m2MQTT contract).
+    g_did = "mitsubishi-heatpump-" + cfg.device_uid;
 
     std::string lwt_topic = g_base + "/availability";
 
@@ -242,7 +251,7 @@ esp_err_t publish_update_discovery() {
     cJSON_AddItemToObject(root, "device", make_device_block());
 
     char* payload = cJSON_PrintUnformatted(root);
-    std::string topic = "homeassistant/update/" + g_slug + "/config";
+    std::string topic = "homeassistant/update/" + g_did + "/config";
     int id = payload ? esp_mqtt_client_publish(g_client, topic.c_str(), payload, 0, 1, true) : -1;
     ESP_LOGI(TAG, "publish_update_discovery -> %s", topic.c_str());
     if (payload) cJSON_free(payload);
@@ -309,7 +318,7 @@ static esp_err_t publish_diag_sensor(const char* name, const char* id_suffix,
     cJSON_AddItemToObject(root, "device", make_device_block());
 
     char* payload = cJSON_PrintUnformatted(root);
-    std::string topic = "homeassistant/sensor/" + g_slug + "_" +
+    std::string topic = "homeassistant/sensor/" + g_did + "_" +
                         id_suffix + "/config";
     int id = payload ? esp_mqtt_client_publish(g_client, topic.c_str(), payload, 0, 1, true) : -1;
     if (payload) cJSON_free(payload);
@@ -419,9 +428,38 @@ esp_err_t publish_state(const cn105::Settings& s, const cn105::Status& st) {
     return id < 0 ? ESP_FAIL : ESP_OK;
 }
 
+// Publish an empty retained message to a discovery config topic, which tells
+// Home Assistant to remove that (orphaned) entity/config.
+static void clear_retained_config(const std::string& topic) {
+    if (!g_client) return;
+    esp_mqtt_client_publish(g_client, topic.c_str(), "", 0, 1, true);
+    ESP_LOGI(TAG, "clear_retained_config -> %s", topic.c_str());
+}
+
+// Older firmware (and any pre-rename state) published the HA discovery configs
+// under the friendly-name slug. Now that the config topic is keyed on the
+// immutable hostname (g_did), those slug-based topics are orphans that collide
+// on unique_id and make the entity disappear after a rename. Clear them once on
+// every connect so the fleet self-heals without touching the broker manually.
+static void clear_legacy_discovery() {
+    if (g_slug.empty() || g_slug == g_did) return;  // nothing legacy to clear
+    clear_retained_config("homeassistant/climate/" + g_slug + "/config");
+    clear_retained_config("homeassistant/update/" + g_slug + "/config");
+    static const char* kDiagSuffixes[] = {
+        "reset_reason", "brownout_count", "vin_sag_count", "vin_min", "rssi",
+    };
+    for (const char* sfx : kDiagSuffixes)
+        clear_retained_config("homeassistant/sensor/" + g_slug + "_" + sfx + "/config");
+}
+
 esp_err_t publish_discovery(const cn105::Settings& s) {
     if (!g_client) return ESP_ERR_INVALID_STATE;
     (void)s;
+
+    // Remove any stale slug-based discovery configs before (re)publishing the
+    // stable hostname-keyed ones, so renames update in place instead of
+    // orphaning the old entity.
+    clear_legacy_discovery();
 
     std::string state_topic = t("/state");
     std::string avail_topic = t("/availability");
@@ -482,7 +520,7 @@ esp_err_t publish_discovery(const cn105::Settings& s) {
     cJSON_AddItemToObject(root, "device", make_device_block());
 
     char* payload = cJSON_PrintUnformatted(root);
-    std::string topic = "homeassistant/climate/" + g_slug + "/config";
+    std::string topic = "homeassistant/climate/" + g_did + "/config";
     int id = payload ? esp_mqtt_client_publish(g_client, topic.c_str(), payload, 0, 1, true) : -1;
     ESP_LOGI(TAG, "publish_discovery -> %s", topic.c_str());
     if (payload) cJSON_free(payload);
