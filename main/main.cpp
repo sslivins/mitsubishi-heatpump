@@ -14,6 +14,7 @@
 #include "cn105.h"
 #include "m5pm1.h"
 #include "hvac_mqtt.h"
+#include "group_config.h"
 #include "web_ui.h"
 #include "ota.h"
 #include "diag.h"
@@ -239,6 +240,10 @@ extern "C" void app_main() {
     // Kconfig fallback. The friendly_name is the MQTT node and HA device label;
     // if blank, fall back to a unique per-chip name so 4 units don't collide.
     std::string uid = wifi::device_uid();
+
+    // Shared-compressor group identity/membership (Phase 1). Loads persisted
+    // group config from NVS; a head with no group is standalone and inert.
+    hvac_group::init(uid);
 
     hvac_mqtt::StoredSettings fallback;
     parse_broker_uri(CONFIG_MQTT_BROKER_URI, fallback.host, fallback.port);

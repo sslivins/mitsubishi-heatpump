@@ -6,6 +6,8 @@ on:
     paths:
       - 'components/hvac_mqtt/hvac_topics.cpp'
       - 'components/hvac_mqtt/include/hvac_topics.h'
+      - 'components/hvac_group/group_proto.cpp'
+      - 'components/hvac_group/include/group_proto.h'
       - 'test/host/**'
       - '.github/workflows/host-tests.yml'
   pull_request:
@@ -13,6 +15,8 @@ on:
     paths:
       - 'components/hvac_mqtt/hvac_topics.cpp'
       - 'components/hvac_mqtt/include/hvac_topics.h'
+      - 'components/hvac_group/group_proto.cpp'
+      - 'components/hvac_group/include/group_proto.h'
       - 'test/host/**'
       - '.github/workflows/host-tests.yml'
 
@@ -31,3 +35,13 @@ jobs:
             test/host/test_hvac_topics.cpp \
             -o host_tests
           ./host_tests
+
+      - name: Build and run host group-protocol tests
+        shell: bash
+        run: |
+          g++ -std=c++17 -Wall -Wextra \
+            -I components/hvac_group/include \
+            components/hvac_group/group_proto.cpp \
+            test/host/test_group_proto.cpp \
+            -o group_tests
+          ./group_tests

@@ -5,6 +5,8 @@
 #include "wifi_manager.h"
 #include "ota.h"
 #include "auth_manager.h"
+#include "group_config.h"
+#include "group_proto.h"
 
 #include <cstring>
 
@@ -634,6 +636,48 @@ esp_err_t handle_device_post(httpd_req_t* req) {
     cJSON_Delete(root);
     return ESP_OK;
 }
+// ── GET /api/group — shared-compressor group identity + membership ─────
+// Read-only view for the web UI (Phase 1). Peer polling / conflict detection
+// arrive in a later phase, so a grouped head whose peers aren't polled yet
+// reports status "indeterminate" (fail-safe) rather than asserting "no
+// conflict"; a head with no group reports "standalone".
+esp_err_t handle_group_get(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_API_AUTH(req);
+    hvac_group::GroupConfig g = hvac_group::get();
+    const bool grouped = hvac_group::in_group();
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "group_id", g.group_id.c_str());
+    cJSON_AddStringToObject(root, "group_label", g.group_label.c_str());
+    cJSON_AddBoolToObject(root, "in_group", grouped);
+    cJSON_AddNumberToObject(root, "protocol_version", hvac_group::kProtocolVersion);
+
+    cJSON* self = cJSON_CreateObject();
+    cJSON_AddStringToObject(self, "uid", hvac_group::self_uid().c_str());
+    cJSON_AddStringToObject(self, "name", wifi::device_display_name().c_str());
+    cJSON_AddItemToObject(root, "self", self);
+
+    cJSON* members = cJSON_CreateArray();
+    for (const auto& uid : g.peers) {
+        cJSON* m = cJSON_CreateObject();
+        cJSON_AddStringToObject(m, "uid", uid.c_str());
+        cJSON_AddStringToObject(m, "state", "unknown");  // polling not yet implemented
+        cJSON_AddItemToArray(members, m);
+    }
+    cJSON_AddItemToObject(root, "members", members);
+    cJSON_AddNumberToObject(root, "member_count",
+                            grouped ? static_cast<int>(g.peers.size()) + 1 : 0);
+    cJSON_AddStringToObject(root, "status", grouped ? "indeterminate" : "standalone");
+
+    char* str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
 esp_err_t handle_wifi_get(httpd_req_t* req) {
     set_cors(req);
     REQUIRE_ADMIN(req);
@@ -945,6 +989,7 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/mqtt",                HTTP_GET,      handle_mqtt_get,       nullptr},
         {"/api/mqtt",                HTTP_POST,     handle_mqtt_post,      nullptr},
         {"/api/device",              HTTP_POST,     handle_device_post,    nullptr},
+        {"/api/group",               HTTP_GET,      handle_group_get,      nullptr},
         {"/api/wifi",                HTTP_GET,      handle_wifi_get,       nullptr},
         {"/api/scan",                HTTP_GET,      handle_scan,           nullptr},
         {"/api/wifi",                HTTP_POST,     handle_wifi_post,      nullptr},
