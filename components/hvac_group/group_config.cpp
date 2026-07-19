@@ -182,6 +182,15 @@ std::string generate_pairing_code() {
     return code;
 }
 
+std::string generate_nonce() { return random_hex(8); }  // 64-bit → 16 hex chars
+
+bool is_peer(const std::string& uid) {
+    Lock lk;
+    for (const auto& p : s_cfg.peers)
+        if (p == uid) return true;
+    return false;
+}
+
 std::string hmac_hex(const std::string& message) {
     std::string secret_hex;
     { Lock lk; secret_hex = s_cfg.group_secret; }

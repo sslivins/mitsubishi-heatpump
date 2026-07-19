@@ -9,6 +9,8 @@
 #include "group_proto.h"
 
 #include <cstring>
+#include <map>
+#include <string>
 
 #include "esp_log.h"
 #include "esp_http_server.h"
@@ -17,10 +19,12 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "cJSON.h"
+#include "mdns.h"
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 static const char* TAG = "web";
 
@@ -637,11 +641,232 @@ esp_err_t handle_device_post(httpd_req_t* req) {
     cJSON_Delete(root);
     return ESP_OK;
 }
+// ── Phase 2b: signed peer polling ──────────────────────────────────────
+// Each grouped head runs a background task that fetches every enrolled peer's
+// live state over a signed GET /api/group/state and caches the derived
+// MemberObs. handle_group_get merges fresh cache entries so conflict detection
+// works from the whole group's real state — not just this head's self-view.
+
+struct PeerEntry {
+    hvac_group::MemberObs obs;
+    int64_t  updated_us   = 0;
+    bool     incompatible = false;
+};
+
+SemaphoreHandle_t             s_peer_mtx = nullptr;
+std::map<std::string, PeerEntry> s_peer_cache;
+
+// A cached peer observation is trusted for this long after its last successful
+// poll; past it the peer is treated as Unknown (fail-safe → Indeterminate).
+constexpr int64_t kPeerFreshUs   = 45LL * 1000 * 1000;  // 45 s
+constexpr int     kPollIntervalMs = 12000;              // ~12 s cadence
+
+// Read a request header into a std::string ("" if absent/oversized).
+std::string get_header(httpd_req_t* req, const char* name) {
+    size_t len = httpd_req_get_hdr_value_len(req, name);
+    if (len == 0 || len > 256) return "";
+    std::string v(len + 1, '\0');
+    if (httpd_req_get_hdr_value_str(req, name, &v[0], len + 1) != ESP_OK) return "";
+    v.resize(len);
+    return v;
+}
+
+// ── GET /api/group/state — signed peer snapshot (Phase 2b) ─────────────
+// NOT session-gated: authentication is the HMAC signature over
+// signing_string(sender, self, gid, nonce, "") using the shared group secret.
+// Only an enrolled peer holding that secret can produce a valid signature.
+esp_err_t handle_group_state(httpd_req_t* req) {
+    set_cors(req);
+    httpd_resp_set_type(req, "application/json");
+
+    if (!hvac_group::in_group()) {
+        httpd_resp_set_status(req, "403 Forbidden");
+        httpd_resp_sendstr(req, "{\"error\":\"not in a group\"}");
+        return ESP_FAIL;
+    }
+    hvac_group::GroupConfig g = hvac_group::get();
+    std::string sender = get_header(req, "X-Group-Sender");
+    std::string gid    = get_header(req, "X-Group-Id");
+    std::string nonce  = get_header(req, "X-Group-Nonce");
+    std::string sig    = get_header(req, "X-Group-Sig");
+
+    if (!hvac_group::is_valid_uid(sender) || !hvac_group::is_valid_nonce(nonce) ||
+        gid != g.group_id || !hvac_group::is_peer(sender)) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_sendstr(req, "{\"error\":\"unauthorized\"}");
+        return ESP_FAIL;
+    }
+    const std::string self = hvac_group::self_uid();
+    if (!hvac_group::hmac_verify(
+            hvac_group::signing_string(sender, self, gid, nonce, ""), sig)) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_sendstr(req, "{\"error\":\"bad signature\"}");
+        return ESP_FAIL;
+    }
+
+    cn105::Settings st  = s_hooks.get_settings ? s_hooks.get_settings() : cn105::Settings{};
+    cn105::Status   sta = s_hooks.get_status   ? s_hooks.get_status()   : cn105::Status{};
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "uid", self.c_str());
+    cJSON_AddStringToObject(root, "power", st.power.c_str());
+    cJSON_AddStringToObject(root, "mode", st.mode.c_str());
+    cJSON_AddBoolToObject(root, "operating", sta.operating);
+    cJSON_AddStringToObject(root, "subMode", sta.subMode.c_str());
+    cJSON_AddStringToObject(root, "stage", sta.stage.c_str());
+    cJSON_AddNumberToObject(root, "pv", hvac_group::kProtocolVersion);
+    char* body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!body) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "{\"error\":\"oom\"}");
+        return ESP_FAIL;
+    }
+    // Sign the response so the poller can trust it (bound to this nonce+receiver).
+    std::string rsig = hvac_group::hmac_hex(
+        hvac_group::signing_string(self, sender, gid, nonce, body));
+    httpd_resp_set_hdr(req, "X-Group-Sig", rsig.c_str());
+    esp_err_t r = httpd_resp_sendstr(req, body);
+    cJSON_free(body);
+    return r;
+}
+
+// Fetch one peer's signed snapshot; on success fill @p out (state=Known) and set
+// @p incompatible on a protocol-version mismatch. Returns false on any failure.
+bool poll_peer(const std::string& uid, hvac_group::MemberObs& out, bool& incompatible) {
+    incompatible = false;
+    hvac_group::GroupConfig g = hvac_group::get();
+    if (g.group_id.empty()) return false;
+    const std::string self = hvac_group::self_uid();
+
+    // Resolve the peer's A record from its derived mDNS hostname.
+    std::string host = std::string(CONFIG_MDNS_HOSTNAME) + "-" + uid;
+    esp_ip4_addr_t addr = {};
+    if (mdns_query_a(host.c_str(), 2000, &addr) != ESP_OK) return false;
+    uint32_t a = addr.addr;  // network byte order: LSB = first octet
+    char ip[16];
+    snprintf(ip, sizeof(ip), "%u.%u.%u.%u",
+             (unsigned)(a & 0xff), (unsigned)((a >> 8) & 0xff),
+             (unsigned)((a >> 16) & 0xff), (unsigned)((a >> 24) & 0xff));
+
+    std::string nonce = hvac_group::generate_nonce();
+    std::string sig   = hvac_group::hmac_hex(
+        hvac_group::signing_string(self, uid, g.group_id, nonce, ""));
+    if (nonce.empty() || sig.empty()) return false;
+
+    std::string url = std::string("http://") + ip + "/api/group/state";
+    esp_http_client_config_t cfg = {};
+    cfg.url        = url.c_str();
+    cfg.method     = HTTP_METHOD_GET;
+    cfg.timeout_ms = 3000;
+    esp_http_client_handle_t cli = esp_http_client_init(&cfg);
+    if (!cli) return false;
+    esp_http_client_set_header(cli, "X-Group-Sender", self.c_str());
+    esp_http_client_set_header(cli, "X-Group-Id",     g.group_id.c_str());
+    esp_http_client_set_header(cli, "X-Group-Nonce",  nonce.c_str());
+    esp_http_client_set_header(cli, "X-Group-Sig",    sig.c_str());
+
+    bool ok = false;
+    if (esp_http_client_open(cli, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(cli);
+        int status = esp_http_client_get_status_code(cli);
+        std::string body;
+        char buf[128];
+        while (body.size() < 1024) {
+            int n = esp_http_client_read(cli, buf, sizeof(buf));
+            if (n <= 0) break;
+            body.append(buf, n);
+        }
+        char* rsig = nullptr;
+        esp_http_client_get_header(cli, "X-Group-Sig", &rsig);
+        if (status == 200 && rsig &&
+            hvac_group::hmac_verify(
+                hvac_group::signing_string(uid, self, g.group_id, nonce, body), rsig)) {
+            cJSON* j = cJSON_Parse(body.c_str());
+            if (j) {
+                const cJSON* juid  = cJSON_GetObjectItem(j, "uid");
+                const cJSON* jpwr  = cJSON_GetObjectItem(j, "power");
+                const cJSON* jmode = cJSON_GetObjectItem(j, "mode");
+                const cJSON* joper = cJSON_GetObjectItem(j, "operating");
+                const cJSON* jsub  = cJSON_GetObjectItem(j, "subMode");
+                const cJSON* jstg  = cJSON_GetObjectItem(j, "stage");
+                const cJSON* jpv   = cJSON_GetObjectItem(j, "pv");
+                std::string puid = (juid && cJSON_IsString(juid)) ? juid->valuestring : "";
+                if (puid == uid) {
+                    int pv = (jpv && cJSON_IsNumber(jpv)) ? jpv->valueint : -1;
+                    out = hvac_group::observe(
+                        uid, uid,
+                        (jpwr  && cJSON_IsString(jpwr))  ? jpwr->valuestring  : "",
+                        (jmode && cJSON_IsString(jmode)) ? jmode->valuestring : "",
+                        (joper && cJSON_IsBool(joper))   ? cJSON_IsTrue(joper) : false,
+                        (jsub  && cJSON_IsString(jsub))  ? jsub->valuestring  : "",
+                        (jstg  && cJSON_IsString(jstg))  ? jstg->valuestring  : "");
+                    if (pv != hvac_group::kProtocolVersion) {
+                        incompatible = true;
+                        out.state = hvac_group::MemberState::Incompatible;
+                    }
+                    ok = true;
+                }
+                cJSON_Delete(j);
+            }
+        }
+        esp_http_client_close(cli);
+    }
+    esp_http_client_cleanup(cli);
+    return ok;
+}
+
+// Background task: poll every enrolled peer on a fixed cadence into the cache.
+void group_poll_task(void*) {
+    for (;;) {
+        if (hvac_group::in_group()) {
+            hvac_group::GroupConfig g = hvac_group::get();
+            for (const auto& uid : g.peers) {
+                hvac_group::MemberObs obs;
+                bool incompat = false;
+                if (poll_peer(uid, obs, incompat)) {
+                    xSemaphoreTake(s_peer_mtx, portMAX_DELAY);
+                    s_peer_cache[uid] = PeerEntry{obs, esp_timer_get_time(), incompat};
+                    xSemaphoreGive(s_peer_mtx);
+                }
+            }
+            // Drop cache entries for peers that are no longer enrolled.
+            xSemaphoreTake(s_peer_mtx, portMAX_DELAY);
+            for (auto it = s_peer_cache.begin(); it != s_peer_cache.end();) {
+                if (!hvac_group::is_peer(it->first)) it = s_peer_cache.erase(it);
+                else ++it;
+            }
+            xSemaphoreGive(s_peer_mtx);
+        }
+        vTaskDelay(pdMS_TO_TICKS(kPollIntervalMs));
+    }
+}
+
+// Look up a peer's cached observation; returns a Known/Incompatible MemberObs if
+// a fresh entry exists, otherwise an Unknown placeholder.
+hvac_group::MemberObs cached_peer_obs(const std::string& uid) {
+    hvac_group::MemberObs m;
+    m.uid   = uid;
+    m.name  = uid;
+    m.state = hvac_group::MemberState::Unknown;
+    if (!s_peer_mtx) return m;
+    xSemaphoreTake(s_peer_mtx, portMAX_DELAY);
+    auto it = s_peer_cache.find(uid);
+    if (it != s_peer_cache.end() &&
+        (esp_timer_get_time() - it->second.updated_us) < kPeerFreshUs) {
+        m = it->second.obs;
+        m.uid = uid;
+        if (m.name.empty()) m.name = uid;
+    }
+    xSemaphoreGive(s_peer_mtx);
+    return m;
+}
+
 // ── GET /api/group — shared-compressor group identity + membership ─────
-// Read-only view for the web UI (Phase 1). Peer polling / conflict detection
-// arrive in a later phase, so a grouped head whose peers aren't polled yet
-// reports status "indeterminate" (fail-safe) rather than asserting "no
-// conflict"; a head with no group reports "standalone".
+// Read-only view for the web UI. Peers are polled in the background (Phase 2b);
+// a peer with a fresh signed snapshot appears Known/Incompatible, otherwise it
+// is Unknown, which keeps the group Indeterminate (fail-safe) rather than
+// asserting "no conflict". A head with no group reports "standalone".
 esp_err_t handle_group_get(httpd_req_t* req) {
     set_cors(req);
     REQUIRE_API_AUTH(req);
@@ -667,14 +892,10 @@ esp_err_t handle_group_get(httpd_req_t* req) {
 
     std::vector<hvac_group::MemberObs> members;
     members.push_back(self_obs);
-    // Peers are enrolled-but-unpolled until Phase 2b adds signed state fetch, so
-    // they are Unknown here (which correctly renders the group Indeterminate).
+    // Merge each enrolled peer's freshly-polled state (Phase 2b). A peer without
+    // a fresh signed snapshot stays Unknown → the group reads Indeterminate.
     for (const auto& uid : g.peers) {
-        hvac_group::MemberObs m;
-        m.uid   = uid;
-        m.name  = uid;  // no directory yet; show the uid
-        m.state = hvac_group::MemberState::Unknown;
-        members.push_back(m);
+        members.push_back(cached_peer_obs(uid));
     }
 
     hvac_group::GroupView view = hvac_group::evaluate_group(members);
@@ -1346,6 +1567,7 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/mqtt",                HTTP_POST,     handle_mqtt_post,      nullptr},
         {"/api/device",              HTTP_POST,     handle_device_post,    nullptr},
         {"/api/group",               HTTP_GET,      handle_group_get,      nullptr},
+        {"/api/group/state",         HTTP_GET,      handle_group_state,    nullptr},
         {"/api/group/pair/start",    HTTP_POST,     handle_group_pair_start,  nullptr},
         {"/api/group/pair/stop",     HTTP_POST,     handle_group_pair_stop,   nullptr},
         {"/api/group/pair/status",   HTTP_GET,      handle_group_pair_status, nullptr},
@@ -1369,6 +1591,14 @@ esp_err_t init(const Hooks& hooks) {
     }
 
     ESP_LOGI(TAG, "web server started — http://%s/", wifi::get_ip());
+
+    // Phase 2b: background peer-state poller feeding the conflict model.
+    s_peer_mtx = xSemaphoreCreateMutex();
+    if (s_peer_mtx) {
+        xTaskCreate(group_poll_task, "grp_poll", 6144, nullptr, 4, nullptr);
+    } else {
+        ESP_LOGE(TAG, "group poll mutex alloc failed — peer polling disabled");
+    }
     return ESP_OK;
 }
 

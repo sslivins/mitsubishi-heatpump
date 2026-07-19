@@ -282,6 +282,35 @@ static void test_group_auto_blind_spot() {
     CHECK_TRUE(!v.warnings.empty());
 }
 
+static void test_observe() {
+    MemberObs a = observe("6dac", "Eric", "ON", "COOL", true, "NORMAL", "MODERATE");
+    CHECK_TRUE(a.state == MemberState::Known);
+    CHECK_TRUE(a.demand == Demand::Cool);
+    CHECK_TRUE(a.power_on);
+    CHECK_TRUE(a.active_now);
+    CHECK_FALSE(a.standby);
+
+    // The blocked/losing-head signature.
+    MemberObs b = observe("6dac", "Eric", "ON", "HEAT", false, "STANDBY", "IDLE");
+    CHECK_TRUE(b.demand == Demand::Heat);
+    CHECK_TRUE(b.standby);
+    CHECK_FALSE(b.active_now);
+
+    // Off head: neutral, not powered, never standby.
+    MemberObs c = observe("x", "X", "OFF", "HEAT", false, "STANDBY", "IDLE");
+    CHECK_TRUE(c.demand == Demand::Neutral);
+    CHECK_FALSE(c.power_on);
+    CHECK_TRUE(c.standby);  // fields still map; caller ignores standby when off
+}
+
+static void test_is_valid_nonce() {
+    CHECK_TRUE(is_valid_nonce("0a1b2c3d"));
+    CHECK_FALSE(is_valid_nonce(""));
+    CHECK_FALSE(is_valid_nonce("XYZ"));           // non-hex
+    CHECK_FALSE(is_valid_nonce("ab\ncd"));        // separator injection blocked
+    CHECK_FALSE(is_valid_nonce(std::string(33, 'a')));  // too long
+}
+
 int main() {
     test_hex_roundtrip();
     test_identity_validation();
@@ -291,6 +320,8 @@ int main() {
     test_ct_equal();
     test_evaluate_claim();
     test_classify_demand();
+    test_observe();
+    test_is_valid_nonce();
     test_group_standalone();
     test_group_ok();
     test_group_conflict_active();
