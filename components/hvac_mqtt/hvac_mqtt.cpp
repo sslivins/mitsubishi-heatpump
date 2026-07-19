@@ -27,9 +27,33 @@ CommandCallback    g_on_command;
 std::function<void()> g_on_connected;
 esp_mqtt_client_handle_t g_client = nullptr;
 bool               g_connected = false;
-std::string        g_base;  ///< "<base_topic>/<friendly_name>"
+std::string        g_base;  ///< "<base_topic>/<slug>"
+std::string        g_slug;  ///< friendly_name reduced to a safe topic segment
 StoredSettings     g_settings;          ///< settings the client was started with
 constexpr char     kNvsNs[] = "mqtt";   ///< NVS namespace for persisted settings
+
+// Reduce an arbitrary friendly_name to a segment safe to embed in an MQTT
+// topic. Home Assistant's MQTT discovery only accepts a node_id/object_id that
+// matches [a-zA-Z0-9_-]; any other character (notably a space) makes HA
+// *silently drop* the discovery message, so the entity never appears even
+// though the broker connection is healthy. Disallowed characters are mapped to
+// '_', consecutive separators collapse, and leading/trailing '_' are trimmed.
+// The raw friendly_name is still used verbatim for the HA display name.
+std::string slugify(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    bool prev_sep = false;
+    for (char c : in) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '-' || c == '_';
+        if (ok) { out.push_back(c); prev_sep = false; }
+        else if (!prev_sep) { out.push_back('_'); prev_sep = true; }
+    }
+    const size_t b = out.find_first_not_of('_');
+    if (b == std::string::npos) return "heatpump";  // nothing usable → safe default
+    const size_t e = out.find_last_not_of('_');
+    return out.substr(b, e - b + 1);
+}
 
 // Read an NVS string key into `out`; leaves `out` unchanged if the key is absent.
 void nvs_get_string(nvs_handle_t h, const char* key, std::string& out) {
@@ -126,7 +150,8 @@ void event_handler(void*, esp_event_base_t, int32_t id, void* data) {
 esp_err_t init(const Config& cfg, CommandCallback on_command) {
     g_cfg = cfg;
     g_on_command = std::move(on_command);
-    g_base = cfg.base_topic + "/" + cfg.friendly_name;
+    g_slug = slugify(cfg.friendly_name);
+    g_base = cfg.base_topic + "/" + g_slug;
 
     std::string lwt_topic = g_base + "/availability";
 
@@ -217,7 +242,7 @@ esp_err_t publish_update_discovery() {
     cJSON_AddItemToObject(root, "device", make_device_block());
 
     char* payload = cJSON_PrintUnformatted(root);
-    std::string topic = "homeassistant/update/" + g_cfg.friendly_name + "/config";
+    std::string topic = "homeassistant/update/" + g_slug + "/config";
     int id = payload ? esp_mqtt_client_publish(g_client, topic.c_str(), payload, 0, 1, true) : -1;
     ESP_LOGI(TAG, "publish_update_discovery -> %s", topic.c_str());
     if (payload) cJSON_free(payload);
@@ -284,7 +309,7 @@ static esp_err_t publish_diag_sensor(const char* name, const char* id_suffix,
     cJSON_AddItemToObject(root, "device", make_device_block());
 
     char* payload = cJSON_PrintUnformatted(root);
-    std::string topic = "homeassistant/sensor/" + g_cfg.friendly_name + "_" +
+    std::string topic = "homeassistant/sensor/" + g_slug + "_" +
                         id_suffix + "/config";
     int id = payload ? esp_mqtt_client_publish(g_client, topic.c_str(), payload, 0, 1, true) : -1;
     if (payload) cJSON_free(payload);
@@ -457,7 +482,7 @@ esp_err_t publish_discovery(const cn105::Settings& s) {
     cJSON_AddItemToObject(root, "device", make_device_block());
 
     char* payload = cJSON_PrintUnformatted(root);
-    std::string topic = "homeassistant/climate/" + g_cfg.friendly_name + "/config";
+    std::string topic = "homeassistant/climate/" + g_slug + "/config";
     int id = payload ? esp_mqtt_client_publish(g_client, topic.c_str(), payload, 0, 1, true) : -1;
     ESP_LOGI(TAG, "publish_discovery -> %s", topic.c_str());
     if (payload) cJSON_free(payload);
