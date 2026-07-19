@@ -49,6 +49,12 @@ bool is_valid_pairing_code(const std::string& code);
 /// Notably it can never contain the '\n' field separator used below.
 bool is_valid_uid(const std::string& uid);
 
+/// A nonce (used to bind a signed peer request↔response and defeat replay) is
+/// 1..32 characters of lowercase hex. Restricting the charset guarantees it can
+/// never contain the '\n' field separator used by signing_string, so an
+/// attacker-supplied nonce can't shift a field boundary.
+bool is_valid_nonce(const std::string& nonce);
+
 /// Build the canonical string that a peer-to-peer request is HMAC-signed over.
 /// Binds the message to sender, *receiver* (so a signature can't be replayed at
 /// a different head), group, and a monotonic op_id/nonce (so it can't be
@@ -165,6 +171,16 @@ struct GroupView {
 /// (case-insensitive). OFF/FAN → Neutral, HEAT → Heat, COOL/DRY → Cool,
 /// AUTO → Auto, anything unrecognized → Neutral (fail safe).
 Demand classify_demand(const std::string& power, const std::string& mode);
+
+/// Build a MemberObs (state=Known) from a head's raw reported fields — the same
+/// derivation used for self and for a polled peer, kept in one host-tested place.
+/// `standby` is set from the STANDBY(+IDLE+!operating) signature. The caller sets
+/// state=SelfKnown for the local head or downgrades to Incompatible on a protocol
+/// mismatch.
+MemberObs observe(const std::string& uid, const std::string& name,
+                  const std::string& power, const std::string& mode,
+                  bool operating, const std::string& sub_mode,
+                  const std::string& stage);
 
 /// The opposing refrigerant direction (Heat↔Cool; Neutral/Auto map to Neutral).
 Demand opposite(Demand d);

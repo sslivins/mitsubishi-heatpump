@@ -68,6 +68,12 @@ std::string hmac_hex(const std::string& message);
 /// Constant-time comparison of an expected HMAC hex against a provided one.
 bool hmac_verify(const std::string& message, const std::string& provided_hex);
 
+/// Generate a fresh 16-hex-char (64-bit) nonce for signing a peer request.
+std::string generate_nonce();
+
+/// True if @p uid is currently an enrolled peer of this head.
+bool is_peer(const std::string& uid);
+
 // ── Pairing (Phase 1b) ─────────────────────────────────────────────────────
 
 /// Seconds a pairing code stays valid, and how many wrong attempts burn it.

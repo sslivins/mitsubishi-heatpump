@@ -3,6 +3,7 @@
 
 #include "wifi_manager.h"
 #include "dns_server.h"
+#include "group_proto.h"
 
 #include <cstring>
 #include <cstdio>
@@ -150,6 +151,21 @@ void start_mdns() {
     };
     mdns_service_add(nullptr, "_http", "_tcp", 80, txt,
                      sizeof(txt) / sizeof(txt[0]));
+
+    // Also advertise a "_mmhvac._tcp" locator service so a controller (or a
+    // sibling head) can browse for shared-compressor group candidates and read
+    // their uid / protocol-version without guessing the hostname suffix. The
+    // group-id is intentionally omitted — it changes at runtime after pairing;
+    // enrolled peers are resolved by hostname (mitsubishi-heatpump-<uid>) and
+    // authenticated by HMAC, not discovered by group-id TXT.
+    char pv[8];
+    snprintf(pv, sizeof(pv), "%d", hvac_group::kProtocolVersion);
+    mdns_txt_item_t gtxt[] = {
+        {"uid", uid.c_str()},
+        {"pv",  pv},
+    };
+    mdns_service_add(nullptr, "_mmhvac", "_tcp", 80, gtxt,
+                     sizeof(gtxt) / sizeof(gtxt[0]));
 
     ESP_LOGI(TAG, "mDNS: %s.local  (_http._tcp instance '%s')",
              host.c_str(), instance.c_str());

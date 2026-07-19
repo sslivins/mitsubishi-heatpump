@@ -71,6 +71,15 @@ bool is_valid_uid(const std::string& uid) {
     return true;
 }
 
+bool is_valid_nonce(const std::string& nonce) {
+    if (nonce.empty() || nonce.size() > 32) return false;
+    for (char c : nonce) {
+        const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        if (!ok) return false;
+    }
+    return true;
+}
+
 std::string signing_string(const std::string& sender_uid,
                            const std::string& receiver_uid,
                            const std::string& group_id,
@@ -181,6 +190,24 @@ Demand classify_demand(const std::string& power, const std::string& mode) {
     if (m == "COOL" || m == "DRY") return Demand::Cool;
     if (m == "AUTO") return Demand::Auto;
     return Demand::Neutral;  // FAN, OFF, or anything unrecognized
+}
+
+MemberObs observe(const std::string& uid, const std::string& name,
+                  const std::string& power, const std::string& mode,
+                  bool operating, const std::string& sub_mode,
+                  const std::string& stage) {
+    MemberObs m;
+    m.uid        = uid;
+    m.name       = name;
+    m.state      = MemberState::Known;
+    m.demand     = classify_demand(power, mode);
+    m.power_on   = (upper(power) == "ON");
+    m.active_now = operating;
+    // The losing head on a shared compressor parks in STANDBY/IDLE with the
+    // compressor not running for it — the authoritative "my mode is blocked".
+    m.standby    = (upper(sub_mode) == "STANDBY") && (upper(stage) == "IDLE") &&
+                   !operating;
+    return m;
 }
 
 Demand opposite(Demand d) {
