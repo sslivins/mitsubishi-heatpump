@@ -25,7 +25,7 @@ idf_component_register(
     REQUIRES nvs_flash esp_wifi esp_netif esp_event esp_driver_i2c
              driver esp_timer esp_app_format esp_http_server json lwip
              app_update esp_https_ota esp_http_client mbedtls
-             cn105 m5pm1 hvac_mqtt
+             cn105 m5pm1 hvac_mqtt hvac_group
 )
 
 # Re-gzip at build time when the source HTML or the gzip script changes.
