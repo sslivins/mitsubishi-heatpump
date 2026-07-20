@@ -71,15 +71,10 @@ bool merge_remote_json(const std::string& json);
 std::string member_display_name(const std::string& uid);
 
 /// Record this head's own current display name into the replica so peers learn
-/// it. No-op if unchanged or standalone. Call with @p seed_only true at boot/
-/// join so a mere restart never clobbers a name a human set elsewhere (e.g. an
-/// admin rename); call with the default (false) on an explicit device rename so
-/// that write wins. LWW: last human write across any entry point wins.
-void note_self_name(const std::string& name, bool seed_only = false);
-
-/// Admin: rename any member (self or a peer). Propagates via gossip. No-op if
-/// @p uid isn't a present member or the name is unchanged.
-esp_err_t set_member_name(const std::string& uid, const std::string& name);
+/// it. No-op if unchanged or standalone. Call at boot/join and on every device
+/// rename. This is the sole writer of a head's name: a head is named only by
+/// its own device display name, so there is no separate admin-rename authority.
+void note_self_name(const std::string& name);
 
 /// Admin: remove a member from the group (OR-Set remove → tombstone). The
 /// evicted head learns of it on its next poll and drops the group. Rejects an
