@@ -7,6 +7,7 @@
 
 #include <cstring>
 
+#include "cJSON.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -26,6 +27,7 @@ constexpr char kNvsNs[] = "hvgroup";
 
 SemaphoreHandle_t s_mtx = nullptr;
 GroupConfig       s_cfg;
+GroupReplica      s_replica;  // authoritative for label + membership (Phase 6)
 std::string       s_self_uid;
 uint64_t          s_op_id = 0;  // monotonic resolution op counter (Phase 3)
 
@@ -92,6 +94,120 @@ bool config_ok(const GroupConfig& c) {
     return true;
 }
 
+// ── Replicated-state (CRDT) JSON + projection (device side) ─────────────────
+// Compact keys keep the snapshot small enough for the poller's body cap.
+
+std::string serialize_replica_locked(const GroupReplica& r) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "l", static_cast<double>(r.lamport));
+    cJSON* lbl = cJSON_AddObjectToObject(root, "lbl");
+    cJSON_AddStringToObject(lbl, "v", r.label.value.c_str());
+    cJSON_AddNumberToObject(lbl, "ver", static_cast<double>(r.label.version));
+    cJSON_AddStringToObject(lbl, "o", r.label.origin.c_str());
+    cJSON* ms = cJSON_AddArrayToObject(root, "m");
+    for (const auto& m : r.members) {
+        cJSON* mo = cJSON_CreateObject();
+        cJSON_AddStringToObject(mo, "u", m.uid.c_str());
+        cJSON_AddStringToObject(mo, "nv", m.name.value.c_str());
+        cJSON_AddNumberToObject(mo, "nver", static_cast<double>(m.name.version));
+        cJSON_AddStringToObject(mo, "no", m.name.origin.c_str());
+        cJSON_AddNumberToObject(mo, "a", static_cast<double>(m.add_version));
+        cJSON_AddItemToArray(ms, mo);
+    }
+    cJSON* ts = cJSON_AddArrayToObject(root, "t");
+    for (const auto& t : r.tombstones) {
+        cJSON* to = cJSON_CreateObject();
+        cJSON_AddStringToObject(to, "u", t.first.c_str());
+        cJSON_AddNumberToObject(to, "v", static_cast<double>(t.second));
+        cJSON_AddItemToArray(ts, to);
+    }
+    char* s = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    std::string out = s ? s : "";
+    if (s) cJSON_free(s);
+    return out;
+}
+
+// Read a uint64 Lamport clock from a cJSON number (bounded, never negative).
+uint64_t json_u64(const cJSON* n) {
+    if (!n || !cJSON_IsNumber(n) || n->valuedouble < 0) return 0;
+    return static_cast<uint64_t>(n->valuedouble);
+}
+
+// Parse untrusted replica JSON, applying the same caps as merge_replica so a
+// hostile peer can't blow up memory. Returns false on unparseable input.
+bool parse_replica(const std::string& json, GroupReplica& out) {
+    out = GroupReplica{};
+    if (json.empty()) return false;
+    cJSON* root = cJSON_Parse(json.c_str());
+    if (!root) return false;
+    out.lamport = json_u64(cJSON_GetObjectItem(root, "l"));
+    if (const cJSON* lbl = cJSON_GetObjectItem(root, "lbl")) {
+        const cJSON* v = cJSON_GetObjectItem(lbl, "v");
+        const cJSON* o = cJSON_GetObjectItem(lbl, "o");
+        out.label.value   = (v && cJSON_IsString(v)) ? sanitize_label(v->valuestring) : "";
+        out.label.version = json_u64(cJSON_GetObjectItem(lbl, "ver"));
+        out.label.origin  = (o && cJSON_IsString(o) && is_valid_uid(o->valuestring))
+                                ? o->valuestring : "";
+    }
+    if (const cJSON* ms = cJSON_GetObjectItem(root, "m"); ms && cJSON_IsArray(ms)) {
+        const cJSON* mo = nullptr;
+        cJSON_ArrayForEach(mo, ms) {
+            if (out.members.size() >= kMaxReplicaMembers) break;
+            const cJSON* u = cJSON_GetObjectItem(mo, "u");
+            if (!u || !cJSON_IsString(u) || !is_valid_uid(u->valuestring)) continue;
+            ReplicaMember m;
+            m.uid = u->valuestring;
+            const cJSON* nv = cJSON_GetObjectItem(mo, "nv");
+            const cJSON* no = cJSON_GetObjectItem(mo, "no");
+            m.name.value   = (nv && cJSON_IsString(nv)) ? sanitize_label(nv->valuestring) : "";
+            m.name.version = json_u64(cJSON_GetObjectItem(mo, "nver"));
+            m.name.origin  = (no && cJSON_IsString(no) && is_valid_uid(no->valuestring))
+                                 ? no->valuestring : "";
+            m.add_version  = json_u64(cJSON_GetObjectItem(mo, "a"));
+            out.members.push_back(m);
+        }
+    }
+    if (const cJSON* ts = cJSON_GetObjectItem(root, "t"); ts && cJSON_IsArray(ts)) {
+        const cJSON* to = nullptr;
+        cJSON_ArrayForEach(to, ts) {
+            if (out.tombstones.size() >= kMaxReplicaTombstones) break;
+            const cJSON* u = cJSON_GetObjectItem(to, "u");
+            if (!u || !cJSON_IsString(u) || !is_valid_uid(u->valuestring)) continue;
+            out.tombstones.emplace_back(u->valuestring, json_u64(cJSON_GetObjectItem(to, "v")));
+        }
+    }
+    cJSON_Delete(root);
+    return true;
+}
+
+// Project the authoritative replica onto the legacy GroupConfig fields that the
+// rest of the firmware reads (group panel label, poll loop, is_peer).
+void reproject_locked() {
+    s_cfg.group_label = sanitize_label(s_replica.label.value);
+    s_cfg.peers.clear();
+    for (const auto& uid : replica_peer_uids(s_replica, s_self_uid))
+        if (is_valid_uid(uid)) s_cfg.peers.push_back(uid);
+}
+
+// Seed a fresh replica from legacy (pre-CRDT) config or a plain member list —
+// used on upgrade and by join fallback. Self is always a member.
+void seed_replica_locked(const std::string& label,
+                         const std::vector<std::string>& peers) {
+    s_replica = GroupReplica{};
+    replica_add_member(s_replica, s_self_uid);
+    for (const auto& p : peers)
+        if (is_valid_uid(p) && p != s_self_uid) replica_add_member(s_replica, p);
+    if (!label.empty()) replica_set_label(s_replica, sanitize_label(label), s_self_uid);
+}
+
+// True if this head is still a present member of its own replica.
+bool self_is_member_locked() {
+    for (const auto& m : s_replica.members)
+        if (m.uid == s_self_uid) return true;
+    return false;
+}
+
 esp_err_t persist_locked(const GroupConfig& c) {
     nvs_handle_t h;
     esp_err_t err = nvs_open(kNvsNs, NVS_READWRITE, &h);
@@ -100,6 +216,7 @@ esp_err_t persist_locked(const GroupConfig& c) {
     nvs_set_str(h, "label", c.group_label.c_str());
     nvs_set_str(h, "secret", c.group_secret.c_str());
     nvs_set_str(h, "peers", serialize_peers(c.peers).c_str());
+    nvs_set_str(h, "replica", serialize_replica_locked(s_replica).c_str());
     err = nvs_commit(h);
     nvs_close(h);
     return err;
@@ -124,6 +241,7 @@ esp_err_t init(const std::string& uid) {
     s_self_uid = uid;
     GroupConfig c;
     nvs_handle_t h;
+    std::string replica_blob;
     if (nvs_open(kNvsNs, NVS_READONLY, &h) == ESP_OK) {
         nvs_get_str_std(h, "gid", c.group_id);
         nvs_get_str_std(h, "label", c.group_label);
@@ -131,6 +249,7 @@ esp_err_t init(const std::string& uid) {
         std::string peers_blob;
         if (nvs_get_str_std(h, "peers", peers_blob))
             c.peers = deserialize_peers(peers_blob);
+        nvs_get_str_std(h, "replica", replica_blob);
         nvs_get_u64(h, "op_id", &s_op_id);  // absent → stays 0
         nvs_close(h);
     }
@@ -138,16 +257,32 @@ esp_err_t init(const std::string& uid) {
     if (!c.group_id.empty() && !is_valid_group_id(c.group_id)) {
         ESP_LOGW(TAG, "ignoring malformed stored group_id");
         c = GroupConfig{};
+        replica_blob.clear();
     }
     // Drop any self/invalid peer that somehow got stored.
     std::vector<std::string> clean;
     for (const auto& p : c.peers)
         if (is_valid_uid(p) && p != s_self_uid) clean.push_back(p);
     c.peers = clean;
+
+    // Establish the authoritative replica. Prefer the persisted CRDT blob; on a
+    // firmware upgrade (no blob yet) synthesize one from the legacy fields so
+    // membership/label carry forward, then persist it for next boot.
+    bool need_persist = false;
+    if (c.group_id.empty()) {
+        s_replica = GroupReplica{};
+    } else if (parse_replica(replica_blob, s_replica) && self_is_member_locked()) {
+        // adopted persisted replica
+    } else {
+        seed_replica_locked(c.group_label, c.peers);
+        need_persist = true;
+    }
     s_cfg = c;
+    if (!c.group_id.empty()) reproject_locked();  // keep peers/label consistent with replica
+    if (need_persist) persist_locked(s_cfg);
     ESP_LOGI(TAG, "loaded: %s (%u peer(s))",
-             c.group_id.empty() ? "standalone" : c.group_id.c_str(),
-             static_cast<unsigned>(c.peers.size()));
+             s_cfg.group_id.empty() ? "standalone" : s_cfg.group_id.c_str(),
+             static_cast<unsigned>(s_cfg.peers.size()));
     return ESP_OK;
 }
 
@@ -163,27 +298,98 @@ bool in_group() {
 esp_err_t save(const GroupConfig& cfg) {
     Lock lk;
     if (!config_ok(cfg)) return ESP_ERR_INVALID_ARG;
-    esp_err_t err = persist_locked(cfg);
-    if (err == ESP_OK) s_cfg = cfg;
+    // Rebuild the authoritative replica from the supplied config so the CRDT
+    // stays the single source of truth for label + membership.
+    if (cfg.group_id.empty()) s_replica = GroupReplica{};
+    else                      seed_replica_locked(cfg.group_label, cfg.peers);
+    GroupConfig c = cfg;
+    if (!cfg.group_id.empty()) {
+        c.group_label = sanitize_label(cfg.group_label);
+        c.peers       = replica_peer_uids(s_replica, s_self_uid);
+    }
+    esp_err_t err = persist_locked(c);
+    if (err == ESP_OK) s_cfg = c;
     return err;
 }
 
 esp_err_t set_label(const std::string& label) {
     Lock lk;
     if (s_cfg.group_id.empty()) return ESP_ERR_INVALID_STATE;
-    GroupConfig c = s_cfg;
-    c.group_label = sanitize_label(label);
-    esp_err_t err = persist_locked(c);
-    if (err == ESP_OK) s_cfg = c;
-    return err;
+    replica_set_label(s_replica, sanitize_label(label), s_self_uid);
+    reproject_locked();
+    return persist_locked(s_cfg);
 }
 
 esp_err_t leave_group() {
     Lock lk;
+    s_replica = GroupReplica{};
     GroupConfig empty;
     esp_err_t err = persist_locked(empty);
     if (err == ESP_OK) s_cfg = empty;
     return err;
+}
+
+std::string replica_json() {
+    Lock lk;
+    if (s_cfg.group_id.empty()) return "";
+    return serialize_replica_locked(s_replica);
+}
+
+bool merge_remote_json(const std::string& json) {
+    Lock lk;
+    if (s_cfg.group_id.empty()) return false;
+    GroupReplica remote;
+    if (!parse_replica(json, remote)) return false;
+    if (!merge_replica(s_replica, remote)) return false;
+    // If an admin on another head evicted us, we're no longer a member — drop
+    // the group entirely (mirrors leave_group) so we stop coordinating.
+    if (!self_is_member_locked()) {
+        s_replica = GroupReplica{};
+        GroupConfig empty;
+        if (persist_locked(empty) == ESP_OK) s_cfg = empty;
+        ESP_LOGW(TAG, "evicted from group by peer; left");
+        return true;
+    }
+    reproject_locked();
+    persist_locked(s_cfg);
+    return true;
+}
+
+std::string member_display_name(const std::string& uid) {
+    Lock lk;
+    return replica_member_name(s_replica, uid);
+}
+
+void note_self_name(const std::string& name, bool seed_only) {
+    Lock lk;
+    if (s_cfg.group_id.empty()) return;
+    if (seed_only && !replica_member_name(s_replica, s_self_uid).empty())
+        return;  // don't overwrite an existing (possibly admin-set) name on boot.
+    if (replica_set_name(s_replica, s_self_uid, sanitize_label(name), s_self_uid)) {
+        reproject_locked();
+        persist_locked(s_cfg);
+    }
+}
+
+esp_err_t set_member_name(const std::string& uid, const std::string& name) {
+    Lock lk;
+    if (s_cfg.group_id.empty()) return ESP_ERR_INVALID_STATE;
+    if (replica_set_name(s_replica, uid, sanitize_label(name), s_self_uid)) {
+        reproject_locked();
+        return persist_locked(s_cfg);
+    }
+    return ESP_OK;  // absent / unchanged is not an error
+}
+
+esp_err_t remove_member(const std::string& uid) {
+    Lock lk;
+    if (s_cfg.group_id.empty()) return ESP_ERR_INVALID_STATE;
+    if (uid == s_self_uid) return ESP_ERR_INVALID_ARG;  // use leave_group() instead
+    if (replica_remove_member(s_replica, uid)) {
+        reproject_locked();
+        return persist_locked(s_cfg);
+    }
+    return ESP_OK;  // not a member is a no-op
 }
 
 std::string generate_group_id()     { return random_hex(kGroupIdHexLen / 2); }
@@ -254,13 +460,18 @@ esp_err_t pairing_start(const std::string& label, std::string& out_code) {
     // Form a group on first pairing: mint a random id + secret so the owner has
     // something to hand out. An already-grouped head keeps its existing id.
     if (!is_valid_group_id(s_cfg.group_id) || !is_valid_group_secret(s_cfg.group_secret)) {
+        GroupReplica prev_rep = s_replica;
+        GroupConfig  prev_cfg = s_cfg;
         GroupConfig c;
         c.group_id     = generate_group_id();
         c.group_secret = generate_group_secret();
-        c.group_label  = sanitize_label(label);
-        esp_err_t err = persist_locked(c);
-        if (err != ESP_OK) return err;
+        // Seed the authoritative replica with this owner as the sole member plus
+        // the initial label, so subsequent joiners inherit a consistent state.
+        seed_replica_locked(sanitize_label(label), {});
         s_cfg = c;
+        reproject_locked();
+        esp_err_t err = persist_locked(s_cfg);
+        if (err != ESP_OK) { s_replica = prev_rep; s_cfg = prev_cfg; return err; }
     }
     s_pair.active        = true;
     s_pair.code          = generate_pairing_code();
@@ -321,16 +532,23 @@ ClaimOutcome pairing_claim(const std::string& code, const std::string& joiner_ui
             out.members.push_back(s_self_uid);
             for (const auto& p : s_cfg.peers) out.members.push_back(p);
 
-            GroupConfig c = s_cfg;
-            add_peer(c.peers, joiner_uid, s_self_uid);
-            if (persist_locked(c) != ESP_OK) {
+            // Enroll the joiner into the authoritative replica (OR-Set add), then
+            // reproject + persist. Snapshot so a persist failure fully rolls back.
+            GroupReplica prev = s_replica;
+            replica_add_member(s_replica, joiner_uid);
+            reproject_locked();
+            if (persist_locked(s_cfg) != ESP_OK) {
                 // Persist failed: report as if no code was active and leave the
                 // window open so a retry can succeed. Don't hand out the secret.
+                s_replica = prev;
+                reproject_locked();
                 out = ClaimOutcome{};
                 out.decision = ClaimDecision::NoActiveCode;
                 break;
             }
-            s_cfg  = c;
+            // Hand the joiner our exact replicated state so membership/labels are
+            // immediately consistent (includes the joiner we just added).
+            out.replica_json = serialize_replica_locked(s_replica);
             s_pair = PairSession{};  // single-use: burn on success
             ESP_LOGI(TAG, "enrolled peer %s", joiner_uid.c_str());
             break;
@@ -350,22 +568,41 @@ ClaimOutcome pairing_claim(const std::string& code, const std::string& joiner_ui
 
 esp_err_t join_group(const std::string& group_id, const std::string& label,
                      const std::string& secret,
-                     const std::vector<std::string>& members) {
+                     const std::vector<std::string>& members,
+                     const std::string& replica_json) {
     if (!is_valid_group_id(group_id) || !is_valid_group_secret(secret))
         return ESP_ERR_INVALID_ARG;
 
-    const std::string self = self_uid();  // takes the lock itself; call before Lock
+    Lock lk;
+    const std::string self = s_self_uid;
 
-    GroupConfig c;
-    c.group_id     = group_id;
-    c.group_label  = sanitize_label(label);
-    c.group_secret = secret;
-    for (const auto& m : members) {
-        if (m == self) continue;
-        if (!is_valid_uid(m)) return ESP_ERR_INVALID_ARG;
-        add_peer(c.peers, m, self);
+    // Build the replica we'll adopt into a local first, so a validation failure
+    // leaves existing state untouched.
+    GroupReplica newrep;
+    if (!replica_json.empty() && parse_replica(replica_json, newrep)) {
+        // Prefer the owner's exact CRDT state; make sure we're in it.
+        bool self_present = false;
+        for (const auto& m : newrep.members)
+            if (m.uid == self) { self_present = true; break; }
+        if (!self_present) replica_add_member(newrep, self);
+    } else {
+        // Fallback: synthesize from the plain member list + label.
+        for (const auto& m : members) {
+            if (m == self) continue;
+            if (!is_valid_uid(m)) return ESP_ERR_INVALID_ARG;
+        }
+        replica_add_member(newrep, self);
+        for (const auto& m : members)
+            if (is_valid_uid(m) && m != self) replica_add_member(newrep, m);
+        if (!label.empty()) replica_set_label(newrep, sanitize_label(label), self);
     }
-    return save(c);  // save() validates + persists + updates cache under the lock
+
+    s_replica       = newrep;
+    s_cfg           = GroupConfig{};
+    s_cfg.group_id  = group_id;
+    s_cfg.group_secret = secret;
+    reproject_locked();  // fills label + peers from the adopted replica
+    return persist_locked(s_cfg);
 }
 
 }  // namespace hvac_group

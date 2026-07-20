@@ -239,4 +239,89 @@ ResolveStrategy parse_strategy(const std::string& s);
 ResolveOp plan_resolution(bool power_on, Demand member_demand,
                           Demand target, ResolveStrategy strat);
 
+// ── Replicated group state (Phase 6: eventual consistency via gossip) ────────
+//
+// The group label, per-head display names, and membership must converge across
+// all heads without a central server, using only the signed peer-poll we already
+// run (anti-entropy gossip). This is a small set of CRDTs so any merge order,
+// duplication, or partial delivery still converges to the same state:
+//   • label + each member name → Last-Writer-Wins register (Lamport-ordered).
+//   • membership → an OR-Set with tombstones (remove-wins, re-add possible).
+// All logic here is pure/deterministic; JSON+NVS live in group_config.cpp.
+
+/// Upper bounds applied when merging *untrusted* peer state, so a malicious or
+/// buggy peer can't grow our structures without limit.
+constexpr size_t kMaxReplicaMembers    = 16;
+constexpr size_t kMaxReplicaTombstones = 32;
+
+/// A Last-Writer-Wins register. Writes are ordered by @c version (a Lamport
+/// clock); ties are broken deterministically by @c origin (the writer's uid) so
+/// concurrent writes converge identically on every replica.
+struct LwwRegister {
+    std::string value;
+    uint64_t    version = 0;
+    std::string origin;
+};
+
+/// One replicated member: its uid, an LWW display name, and the Lamport time it
+/// was (last) added — its OR-Set add-tag, compared against the tombstone to
+/// decide whether a removal supersedes it.
+struct ReplicaMember {
+    std::string uid;
+    LwwRegister name;
+    uint64_t    add_version = 0;
+};
+
+/// The full replicated group state. @c lamport is this replica's logical clock
+/// (monotonic; advanced past everything it has seen so new local writes always
+/// win over what they observed).
+struct GroupReplica {
+    uint64_t                                      lamport = 0;
+    LwwRegister                                   label;
+    std::vector<ReplicaMember>                    members;
+    std::vector<std::pair<std::string, uint64_t>> tombstones;  // uid → remove version
+};
+
+/// True if write (va,oa) strictly supersedes (vb,ob) under LWW ordering:
+/// higher version wins; equal version breaks the tie by lexicographically
+/// greater origin (an arbitrary but total, replica-independent order).
+bool lww_wins(uint64_t va, const std::string& oa,
+              uint64_t vb, const std::string& ob);
+
+/// Remove-version recorded for @p uid, or 0 if it has never been tombstoned.
+uint64_t replica_tombstone_version(const GroupReplica& r, const std::string& uid);
+
+/// Merge @p remote into @p local (anti-entropy). Deterministic, commutative,
+/// idempotent, associative → all replicas converge. Returns true if @p local
+/// changed (so the caller can persist/republish only on a real delta). Advances
+/// @c local.lamport past every version observed.
+bool merge_replica(GroupReplica& local, const GroupReplica& remote);
+
+/// Local write: set the group label. Bumps the clock and stamps the write with
+/// @p writer_uid. Returns true (always a new write) so callers persist.
+bool replica_set_label(GroupReplica& r, const std::string& label,
+                       const std::string& writer_uid);
+
+/// Local write: set @p uid's display name (only if @p uid is a present member).
+/// No-op (returns false) if the name is unchanged or the member is absent.
+bool replica_set_name(GroupReplica& r, const std::string& uid,
+                      const std::string& name, const std::string& writer_uid);
+
+/// Local op: add @p uid to the group (OR-Set add). Returns false if already
+/// present. A fresh add after a removal resurrects the member (its add_version
+/// exceeds the old tombstone because the clock is monotonic).
+bool replica_add_member(GroupReplica& r, const std::string& uid);
+
+/// Local op: remove @p uid (OR-Set remove → tombstone at a new clock tick).
+/// Returns false if @p uid isn't currently a present member.
+bool replica_remove_member(GroupReplica& r, const std::string& uid);
+
+/// The uids of all present members except @p self_uid, in stored order — the
+/// projection that feeds the legacy GroupConfig.peers list.
+std::vector<std::string> replica_peer_uids(const GroupReplica& r,
+                                           const std::string& self_uid);
+
+/// Display name recorded for @p uid, or "" if none / not a present member.
+std::string replica_member_name(const GroupReplica& r, const std::string& uid);
+
 }  // namespace hvac_group
