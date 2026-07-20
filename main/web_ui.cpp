@@ -834,6 +834,7 @@ bool poll_peer(const std::string& uid, hvac_group::MemberObs& out, bool& incompa
 
 // Background task: poll every enrolled peer on a fixed cadence into the cache.
 void update_status_led();  // defined below; drives the onboard warning glyph
+void update_group_mqtt();  // defined below; mirrors group status to Home Assistant
 
 void group_poll_task(void*) {
     for (;;) {
@@ -857,6 +858,7 @@ void group_poll_task(void*) {
             xSemaphoreGive(s_peer_mtx);
         }
         update_status_led();  // reflect the current group status on the LED
+        update_group_mqtt();  // mirror the current group status to Home Assistant
         vTaskDelay(pdMS_TO_TICKS(kPollIntervalMs));
     }
 }
@@ -932,6 +934,46 @@ void update_status_led() {
             status_led::set(status_led::Level::Off);
             break;
     }
+}
+
+// Mirror the current group status to Home Assistant over MQTT (optional/additive).
+// Derived from the same GroupView as the web UI and the LED, so all three agree.
+// Publishes only on a change (the retained topic keeps HA in sync across
+// reconnects) and no-ops entirely when the MQTT client isn't connected.
+void update_group_mqtt() {
+    if (!hvac_mqtt::is_connected()) return;
+
+    hvac_mqtt::GroupState gs;
+    std::string locked_mode;
+    std::string locked_by;
+    if (!hvac_group::in_group()) {
+        gs.in_group     = false;
+        gs.status       = "standalone";
+        gs.conflict     = false;
+        gs.member_count = 0;
+    } else {
+        hvac_group::GroupView v = compute_group_view(nullptr);
+        hvac_group::GroupConfig g = hvac_group::get();
+        gs.in_group  = true;
+        gs.status    = hvac_group::status_str(v.status);
+        gs.conflict  = (v.status == hvac_group::GroupStatus::Conflict) ||
+                       (v.status == hvac_group::GroupStatus::PendingConflict);
+        if (v.locked_mode != hvac_group::Demand::Neutral)
+            locked_mode = hvac_group::demand_str(v.locked_mode);
+        locked_by    = v.locked_by;
+        gs.locked_mode  = locked_mode.c_str();
+        gs.locked_by    = locked_by.c_str();
+        gs.member_count = static_cast<int>(g.peers.size()) + 1;
+    }
+
+    // Suppress republishing an unchanged state each poll — the broker retains it.
+    static std::string s_last_pub;
+    std::string sig = std::string(gs.status) + '|' + gs.locked_mode + '|' +
+                      gs.locked_by + '|' + (gs.conflict ? "1" : "0") + '|' +
+                      std::to_string(gs.member_count);
+    if (sig == s_last_pub) return;
+    s_last_pub = sig;
+    hvac_mqtt::publish_group_state(gs);
 }
 
 // ── Phase 3: coordinator-per-op resolution ─────────────────────────────

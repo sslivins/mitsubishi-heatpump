@@ -285,6 +285,7 @@ extern "C" void app_main() {
         hvac_mqtt::publish_discovery(g_hp.getSettings());
         hvac_mqtt::publish_update_discovery();
         hvac_mqtt::publish_diag_discovery();
+        hvac_mqtt::publish_group_discovery();
         hvac_mqtt::publish_settings(g_hp.getSettings());
         hvac_mqtt::publish_state(g_hp.getSettings(), g_hp.getStatus());
         ota::UpdateInfo u = ota::get_update_info();
