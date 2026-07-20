@@ -877,7 +877,149 @@ hvac_group::MemberObs cached_peer_obs(const std::string& uid) {
     return m;
 }
 
-// ── GET /api/group — shared-compressor group identity + membership ─────
+// ── Phase 3: coordinator-per-op resolution ─────────────────────────────
+// A user picks a target mode on one head (the coordinator). That head assigns a
+// monotonic op_id, applies the change to itself, and fans the op out to every
+// enrolled peer over a signed POST /api/group/sync. Peers apply in op_id order
+// and never turn an OFF zone on. A minimum dwell between accepted changes guards
+// the shared compressor against rapid oscillation from a bug or bad actor.
+
+// Minimum time between accepted mode/power changes on a single head. Sized to
+// sit just under the measured ~21 s idle / ~36 s min-off window — long enough to
+// stop oscillation, short enough that a legitimate correction isn't locked out
+// for an unreasonable time.
+constexpr int64_t kGroupDwellUs = 20LL * 1000 * 1000;  // 20 s
+
+SemaphoreHandle_t s_op_mtx      = nullptr;
+bool              s_have_last_op = false;
+int64_t           s_last_op_us   = 0;
+
+// Has the dwell window elapsed since the last accepted change? Only actual
+// changes advance the timer, so idempotent no-ops never consume the window.
+bool dwell_ok() {
+    if (!s_op_mtx) return true;
+    xSemaphoreTake(s_op_mtx, portMAX_DELAY);
+    const bool ok = !s_have_last_op ||
+                    (esp_timer_get_time() - s_last_op_us) >= kGroupDwellUs;
+    xSemaphoreGive(s_op_mtx);
+    return ok;
+}
+void mark_op() {
+    if (!s_op_mtx) return;
+    xSemaphoreTake(s_op_mtx, portMAX_DELAY);
+    s_have_last_op = true;
+    s_last_op_us   = esp_timer_get_time();
+    xSemaphoreGive(s_op_mtx);
+}
+
+// This head's live refrigerant demand + power, from the CN105 settings.
+void self_view(hvac_group::Demand& demand, bool& power_on) {
+    cn105::Settings st = s_hooks.get_settings ? s_hooks.get_settings() : cn105::Settings{};
+    demand   = hvac_group::classify_demand(st.power, st.mode);
+    power_on = (st.power == "ON");
+}
+
+// Apply a planned resolution op to this head via the CN105 command hooks.
+// Returns true if a change was actually issued.
+bool apply_resolve_op(const hvac_group::ResolveOp& op) {
+    if (!op.change) return false;
+    if (op.turn_off)
+        apply(hvac_mqtt::Command::Kind::Power, "OFF");
+    else
+        apply(hvac_mqtt::Command::Kind::Mode, hvac_group::demand_str(op.set_mode));
+    return true;
+}
+
+// Plan + apply a resolution to THIS head, honouring the dwell guard. Fills
+// @p out_reason with a machine token: applied / aligned / dwell.
+bool resolve_self(hvac_group::Demand target, hvac_group::ResolveStrategy strat,
+                  std::string& out_reason) {
+    hvac_group::Demand demand; bool power_on;
+    self_view(demand, power_on);
+    hvac_group::ResolveOp op = hvac_group::plan_resolution(power_on, demand, target, strat);
+    if (!op.change) { out_reason = "aligned"; return false; }
+    if (!dwell_ok()) { out_reason = "dwell"; return false; }
+    apply_resolve_op(op);
+    mark_op();
+    out_reason = "applied";
+    return true;
+}
+
+// Coordinator side: send one signed resolution op to a single peer over
+// POST /api/group/sync. @p reqbody is the exact JSON that was signed. Returns a
+// machine token: the peer's own reason (applied/aligned/stale/dwell) on a
+// verified 200, else a transport token (unreachable / http / badsig / error).
+std::string sync_peer(const std::string& uid, const std::string& reqbody) {
+    hvac_group::GroupConfig g = hvac_group::get();
+    if (g.group_id.empty()) return "error";
+    const std::string self = hvac_group::self_uid();
+
+    // Resolve the peer's A record from its derived mDNS hostname.
+    std::string host = std::string(CONFIG_MDNS_HOSTNAME) + "-" + uid;
+    esp_ip4_addr_t addr = {};
+    if (mdns_query_a(host.c_str(), 2000, &addr) != ESP_OK) return "unreachable";
+    uint32_t a = addr.addr;
+    char ip[16];
+    snprintf(ip, sizeof(ip), "%u.%u.%u.%u",
+             (unsigned)(a & 0xff), (unsigned)((a >> 8) & 0xff),
+             (unsigned)((a >> 16) & 0xff), (unsigned)((a >> 24) & 0xff));
+
+    std::string nonce = hvac_group::generate_nonce();
+    std::string sig   = hvac_group::hmac_hex(
+        hvac_group::signing_string(self, uid, g.group_id, nonce, reqbody));
+    if (nonce.empty() || sig.empty()) return "error";
+
+    PollCtx ctx;
+    std::string url = std::string("http://") + ip + "/api/group/sync";
+    esp_http_client_config_t cfg = {};
+    cfg.url           = url.c_str();
+    cfg.method        = HTTP_METHOD_POST;
+    cfg.timeout_ms    = 4000;
+    cfg.event_handler = poll_evt;
+    cfg.user_data     = &ctx;
+    esp_http_client_handle_t cli = esp_http_client_init(&cfg);
+    if (!cli) return "error";
+    esp_http_client_set_header(cli, "Content-Type",   "application/json");
+    esp_http_client_set_header(cli, "X-Group-Sender", self.c_str());
+    esp_http_client_set_header(cli, "X-Group-Id",     g.group_id.c_str());
+    esp_http_client_set_header(cli, "X-Group-Nonce",  nonce.c_str());
+    esp_http_client_set_header(cli, "X-Group-Sig",    sig.c_str());
+    esp_http_client_set_post_field(cli, reqbody.c_str(), reqbody.size());
+
+    std::string result = "error";
+    if (esp_http_client_perform(cli) == ESP_OK) {
+        int status = esp_http_client_get_status_code(cli);
+        if (status == 200 && !ctx.sig.empty() &&
+            hvac_group::hmac_verify(
+                hvac_group::signing_string(uid, self, g.group_id, nonce, ctx.body), ctx.sig)) {
+            cJSON* j = cJSON_Parse(ctx.body.c_str());
+            if (j) {
+                const cJSON* jr = cJSON_GetObjectItem(j, "reason");
+                result = (jr && cJSON_IsString(jr)) ? jr->valuestring : "applied";
+                cJSON_Delete(j);
+            } else {
+                result = "applied";
+            }
+        } else if (status == 200) {
+            result = "badsig";
+        } else {
+            result = "http";
+        }
+    } else {
+        result = "unreachable";
+    }
+    esp_http_client_cleanup(cli);
+    return result;
+}
+
+// A per-member result counts as success (not "partial") only when the change
+// definitely converged: it was applied, was already aligned, or the peer had
+// already seen an equal/newer op (idempotent).
+bool sync_result_ok(const std::string& r) {
+    return r == "applied" || r == "aligned" || r == "stale";
+}
+
+
 // Read-only view for the web UI. Peers are polled in the background (Phase 2b);
 // a peer with a fresh signed snapshot appears Known/Incompatible, otherwise it
 // is Unknown, which keeps the group Indeterminate (fail-safe) rather than
@@ -1240,6 +1382,178 @@ esp_err_t handle_group_leave(httpd_req_t* req) {
     return httpd_resp_sendstr(req, "{\"status\":\"left\"}");
 }
 
+// ── POST /api/group/sync ─ apply an ordered resolution op (signed peer) ─
+// NOT session-gated: authenticated by the HMAC signature over
+// signing_string(sender, self, gid, nonce, body). Body:
+//   {"op_id":N,"target_mode":"HEAT|COOL","strategy":"flip|off_conflicting"}
+// Applies only this head's mode/power (never OTA/settings/wifi), in op_id order,
+// honouring the dwell guard. The response is signed back to the coordinator.
+esp_err_t handle_group_sync(httpd_req_t* req) {
+    set_cors(req);
+    httpd_resp_set_type(req, "application/json");
+
+    if (!hvac_group::in_group()) {
+        httpd_resp_set_status(req, "403 Forbidden");
+        httpd_resp_sendstr(req, "{\"error\":\"not in a group\"}");
+        return ESP_FAIL;
+    }
+    hvac_group::GroupConfig g = hvac_group::get();
+    std::string sender = get_header(req, "X-Group-Sender");
+    std::string gid    = get_header(req, "X-Group-Id");
+    std::string nonce  = get_header(req, "X-Group-Nonce");
+    std::string sig    = get_header(req, "X-Group-Sig");
+
+    char* raw = recv_body(req);
+    std::string body = raw ? raw : "";
+    if (raw) free(raw);
+
+    if (!hvac_group::is_valid_uid(sender) || !hvac_group::is_valid_nonce(nonce) ||
+        gid != g.group_id || !hvac_group::is_peer(sender) || body.empty()) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_sendstr(req, "{\"error\":\"unauthorized\"}");
+        return ESP_FAIL;
+    }
+    const std::string self = hvac_group::self_uid();
+    if (!hvac_group::hmac_verify(
+            hvac_group::signing_string(sender, self, gid, nonce, body), sig)) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_sendstr(req, "{\"error\":\"bad signature\"}");
+        return ESP_FAIL;
+    }
+
+    cJSON* j = cJSON_Parse(body.c_str());
+    if (!j) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"error\":\"invalid json\"}");
+        return ESP_FAIL;
+    }
+    const cJSON* jop  = cJSON_GetObjectItem(j, "op_id");
+    const cJSON* jtm  = cJSON_GetObjectItem(j, "target_mode");
+    const cJSON* jst  = cJSON_GetObjectItem(j, "strategy");
+    uint64_t op_id = (jop && cJSON_IsNumber(jop) && jop->valuedouble > 0)
+                         ? (uint64_t)jop->valuedouble : 0;
+    std::string tm  = (jtm && cJSON_IsString(jtm)) ? jtm->valuestring : "";
+    std::string stg = (jst && cJSON_IsString(jst)) ? jst->valuestring : "";
+    cJSON_Delete(j);
+
+    hvac_group::Demand target = hvac_group::parse_target_mode(tm);
+    if (op_id == 0 || (target != hvac_group::Demand::Heat &&
+                       target != hvac_group::Demand::Cool)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"error\":\"bad op\"}");
+        return ESP_FAIL;
+    }
+    hvac_group::ResolveStrategy strat = hvac_group::parse_strategy(stg);
+
+    // Order + replay guard: only a strictly-newer op is honoured.
+    std::string reason;
+    if (!hvac_group::accept_op_id(op_id)) {
+        reason = "stale";
+    } else {
+        resolve_self(target, strat, reason);  // applied / aligned / dwell
+    }
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "uid", self.c_str());
+    cJSON_AddNumberToObject(root, "op_id", (double)op_id);
+    cJSON_AddBoolToObject(root, "applied", reason == "applied");
+    cJSON_AddStringToObject(root, "reason", reason.c_str());
+    cJSON_AddNumberToObject(root, "pv", hvac_group::kProtocolVersion);
+    char* rbody = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!rbody) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "{\"error\":\"oom\"}");
+        return ESP_FAIL;
+    }
+    std::string rsig = hvac_group::hmac_hex(
+        hvac_group::signing_string(self, sender, gid, nonce, rbody));
+    httpd_resp_set_hdr(req, "X-Group-Sig", rsig.c_str());
+    esp_err_t r = httpd_resp_sendstr(req, rbody);
+    cJSON_free(rbody);
+    return r;
+}
+
+// ── POST /api/group/resolve ─ coordinate a group mode resolution (admin) ─
+// Body: {"target_mode":"HEAT|COOL","strategy":"flip|off_conflicting"}
+// This head becomes the coordinator for one op: it allocates a monotonic op_id,
+// applies the change to itself, then fans the signed op out to every enrolled
+// peer. Reports "ok" only if every enrolled member converged; "partial" if any
+// peer was unreachable or rejected the change.
+esp_err_t handle_group_resolve(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    char* body = recv_body(req);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
+        return ESP_FAIL;
+    }
+    cJSON* json = cJSON_Parse(body);
+    free(body);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    const cJSON* jtm = cJSON_GetObjectItem(json, "target_mode");
+    const cJSON* jst = cJSON_GetObjectItem(json, "strategy");
+    std::string tm  = (jtm && cJSON_IsString(jtm)) ? jtm->valuestring : "";
+    std::string stg = (jst && cJSON_IsString(jst)) ? jst->valuestring : "";
+    cJSON_Delete(json);
+
+    hvac_group::Demand target = hvac_group::parse_target_mode(tm);
+    if (target != hvac_group::Demand::Heat && target != hvac_group::Demand::Cool)
+        return send_json_error(req, "400 Bad Request", "target_mode must be HEAT or COOL");
+    hvac_group::ResolveStrategy strat = hvac_group::parse_strategy(stg);
+    const char* strat_tok = (strat == hvac_group::ResolveStrategy::OffConflicting)
+                                ? "off_conflicting" : "flip";
+
+    hvac_group::GroupConfig g = hvac_group::get();
+    uint64_t op_id = hvac_group::issue_op_id();
+
+    // Apply to self first (we are the origin, so no accept_op_id needed).
+    std::string self_reason;
+    resolve_self(target, strat, self_reason);
+
+    // Build the exact op body once, then sign+send it to each peer.
+    cJSON* opj = cJSON_CreateObject();
+    cJSON_AddNumberToObject(opj, "op_id", (double)op_id);
+    cJSON_AddStringToObject(opj, "target_mode", hvac_group::demand_str(target));
+    cJSON_AddStringToObject(opj, "strategy", strat_tok);
+    cJSON_AddStringToObject(opj, "coordinator_uid", hvac_group::self_uid().c_str());
+    char* opstr = cJSON_PrintUnformatted(opj);
+    cJSON_Delete(opj);
+    std::string opbody = opstr ? opstr : "";
+    if (opstr) cJSON_free(opstr);
+
+    bool all_ok = sync_result_ok(self_reason);
+    cJSON* results = cJSON_CreateArray();
+    for (const auto& uid : g.peers) {
+        std::string r = opbody.empty() ? std::string("error") : sync_peer(uid, opbody);
+        if (!sync_result_ok(r)) all_ok = false;
+        cJSON* jm = cJSON_CreateObject();
+        cJSON_AddStringToObject(jm, "uid", uid.c_str());
+        cJSON_AddStringToObject(jm, "result", r.c_str());
+        cJSON_AddItemToArray(results, jm);
+    }
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", all_ok ? "ok" : "partial");
+    cJSON_AddNumberToObject(root, "op_id", (double)op_id);
+    cJSON_AddStringToObject(root, "target_mode", hvac_group::demand_str(target));
+    cJSON_AddStringToObject(root, "strategy", strat_tok);
+    cJSON* jself = cJSON_CreateObject();
+    cJSON_AddStringToObject(jself, "uid", hvac_group::self_uid().c_str());
+    cJSON_AddStringToObject(jself, "result", self_reason.c_str());
+    cJSON_AddItemToObject(root, "self", jself);
+    cJSON_AddItemToObject(root, "results", results);
+    char* str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
 // ── POST /api/group/label ─ rename the group (admin) ───────────────────
 esp_err_t handle_group_label(httpd_req_t* req) {
     set_cors(req);
@@ -1589,6 +1903,8 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/group/pair/claim",    HTTP_POST,     handle_group_pair_claim,  nullptr},
         {"/api/group/pair/join",     HTTP_POST,     handle_group_pair_join,   nullptr},
         {"/api/group/leave",         HTTP_POST,     handle_group_leave,       nullptr},
+        {"/api/group/sync",          HTTP_POST,     handle_group_sync,        nullptr},
+        {"/api/group/resolve",       HTTP_POST,     handle_group_resolve,     nullptr},
         {"/api/group/label",         HTTP_POST,     handle_group_label,       nullptr},
         {"/api/wifi",                HTTP_GET,      handle_wifi_get,       nullptr},
         {"/api/scan",                HTTP_GET,      handle_scan,           nullptr},
@@ -1609,6 +1925,7 @@ esp_err_t init(const Hooks& hooks) {
 
     // Phase 2b: background peer-state poller feeding the conflict model.
     s_peer_mtx = xSemaphoreCreateMutex();
+    s_op_mtx   = xSemaphoreCreateMutex();  // Phase 3: dwell guard for resolutions
     if (s_peer_mtx) {
         xTaskCreate(group_poll_task, "grp_poll", 6144, nullptr, 4, nullptr);
     } else {

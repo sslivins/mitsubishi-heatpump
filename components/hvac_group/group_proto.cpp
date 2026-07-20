@@ -332,4 +332,36 @@ GroupView evaluate_group(const std::vector<MemberObs>& members) {
     return v;
 }
 
+Demand parse_target_mode(const std::string& mode) {
+    const std::string m = upper(mode);
+    if (m == "HEAT") return Demand::Heat;
+    if (m == "COOL") return Demand::Cool;
+    return Demand::Neutral;
+}
+
+ResolveStrategy parse_strategy(const std::string& s) {
+    return upper(s) == "OFF_CONFLICTING" ? ResolveStrategy::OffConflicting
+                                         : ResolveStrategy::FlipMode;
+}
+
+ResolveOp plan_resolution(bool power_on, Demand member_demand,
+                          Demand target, ResolveStrategy strat) {
+    ResolveOp op;
+    // Only Heat/Cool are valid resolution targets.
+    if (target != Demand::Heat && target != Demand::Cool) return op;
+    // A zero-draw zone (OFF/FAN, or simply not powered) is never disturbed, so a
+    // resolution can never silently turn an OFF zone on.
+    if (!power_on || member_demand == Demand::Neutral) return op;
+    // Already asking the compressor for the target direction → nothing to do.
+    if (member_demand == target) return op;
+    // Otherwise this zone conflicts (opposing Heat/Cool, or unreadable Auto).
+    op.change = true;
+    if (strat == ResolveStrategy::OffConflicting) {
+        op.turn_off = true;
+    } else {
+        op.set_mode = target;
+    }
+    return op;
+}
+
 }  // namespace hvac_group

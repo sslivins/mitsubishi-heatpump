@@ -74,6 +74,26 @@ std::string generate_nonce();
 /// True if @p uid is currently an enrolled peer of this head.
 bool is_peer(const std::string& uid);
 
+// ── Resolution ordering (Phase 3) ──────────────────────────────────────────
+// A monotonic op_id, persisted in NVS, that totally orders resolution ops so a
+// rebooting/late peer can reject a stale or replayed op. The counter is
+// per-head and survives leave/rejoin (never decreases) so an old op_id can
+// never be replayed after a group is torn down and re-formed.
+
+/// The highest op_id this head has issued or accepted (0 if none yet).
+uint64_t last_op_id();
+
+/// Coordinator side: allocate the next op_id (bumps + persists) and return it.
+/// The returned value is strictly greater than every previously issued/accepted
+/// op_id on this head.
+uint64_t issue_op_id();
+
+/// Receiver side: accept @p incoming only if it is strictly greater than the
+/// last seen op_id. On acceptance the counter advances and is persisted and the
+/// function returns true; a stale/replayed (≤ last) op_id returns false and
+/// changes nothing.
+bool accept_op_id(uint64_t incoming);
+
 // ── Pairing (Phase 1b) ─────────────────────────────────────────────────────
 
 /// Seconds a pairing code stays valid, and how many wrong attempts burn it.

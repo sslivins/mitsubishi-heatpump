@@ -200,4 +200,43 @@ const char* status_str(GroupStatus s);
 /// an otherwise-Ok view to Indeterminate (never masks a detected conflict).
 GroupView evaluate_group(const std::vector<MemberObs>& members);
 
+// ── Resolution planning (Phase 3) ───────────────────────────────────────────
+//
+// Pure logic for the coordinator-per-op resolve: given a chosen target mode and
+// a strategy, decide what each member must do. Deterministic and host-tested so
+// the "never turn an OFF zone on" / "only touch conflicting zones" guarantees
+// are locked down without hardware.
+
+/// How a coordinator resolves conflicting zones onto a single target mode.
+enum class ResolveStrategy {
+    FlipMode,        ///< switch a conflicting zone to the target mode (default).
+    OffConflicting,  ///< turn a conflicting zone OFF instead of flipping it.
+};
+
+/// The concrete change one member should apply during a resolution. When
+/// @c change is false the member is left completely untouched.
+struct ResolveOp {
+    bool   change   = false;            ///< false → leave this member as-is.
+    bool   turn_off = false;            ///< OffConflicting: power the zone OFF.
+    Demand set_mode = Demand::Neutral;  ///< FlipMode: the mode to switch to.
+};
+
+/// Parse a target-mode token ("HEAT"/"COOL", case-insensitive) into a Demand.
+/// Only Heat and Cool are valid resolution targets; anything else (including
+/// AUTO/OFF/FAN/garbage) → Neutral, which callers reject as an invalid target.
+Demand parse_target_mode(const std::string& mode);
+
+/// Parse a strategy token ("flip"/"off_conflicting", case-insensitive).
+/// Unrecognized/empty → FlipMode, the safe default that keeps zones running.
+ResolveStrategy parse_strategy(const std::string& s);
+
+/// Decide what one member must do to resolve onto @p target under @p strat.
+/// A member "conflicts" when it is powered and drawing a non-neutral direction
+/// other than the target (an opposing Heat/Cool, or unreadable Auto). A member
+/// that is off/neutral (OFF/FAN or simply not powered) or already aligned with
+/// the target is left untouched — a resolution never turns an OFF zone on. An
+/// invalid @p target (not Heat/Cool) yields no change.
+ResolveOp plan_resolution(bool power_on, Demand member_demand,
+                          Demand target, ResolveStrategy strat);
+
 }  // namespace hvac_group
