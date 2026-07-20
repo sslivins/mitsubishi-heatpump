@@ -1565,12 +1565,12 @@ function memberRow(name,demand,dotcls,tag,isLock,uid,isPeer){
   // position — bigger touch target, self-worded confirm. One name per head.
   let ctrls='';
   if(uid && isPeer){
-    ctrls='<span class="gmctl"><button class="gmbtn" title="Remove from group" '+
-      'aria-label="Remove '+gEsc(name)+' from group" '+
-      'onclick="groupRemoveMember(\''+gEsc(uid)+'\',\''+gEsc(name)+'\')">\u2715</button></span>';
+    ctrls='<span class="gmctl"><button class="gmbtn" data-gact="remove" '+
+      'data-guid="'+gEsc(uid)+'" data-gname="'+gEsc(name)+'" '+
+      'title="Remove from group" aria-label="Remove '+gEsc(name)+' from group">\u2715</button></span>';
   } else if(uid && !isPeer){
-    ctrls='<span class="gmctl"><button class="gmbtn leave" title="Leave the group" '+
-      'aria-label="Leave the group" onclick="groupLeave()">Leave</button></span>';
+    ctrls='<span class="gmctl"><button class="gmbtn leave" data-gact="leave" '+
+      'title="Leave the group" aria-label="Leave the group">Leave</button></span>';
   }
   return '<div class="gmember">'+
     '<span class="gdot '+dotcls+'"></span>'+
@@ -1633,7 +1633,23 @@ function renderGroupPanel(g){
       lockMatch(m.name,m.uid),m.uid,true));
   });
   $('gMembers').innerHTML=rows.join('');
+  wireMemberCtrls();
   const ri=$('gRenameInput'); if(ri&&!groupEditing&&document.activeElement!==ri) ri.value=g.group_label||'';
+}
+// Delegate member-row button clicks. Using data-* attributes + one listener
+// (instead of inline onclick with interpolated names) keeps names containing
+// quotes/apostrophes — e.g. "Eric's Room" — from breaking the handler.
+let memberCtrlsWired=false;
+function wireMemberCtrls(){
+  if(memberCtrlsWired) return;
+  const box=$('gMembers'); if(!box) return;
+  box.addEventListener('click',e=>{
+    const btn=e.target.closest('button[data-gact]'); if(!btn) return;
+    const act=btn.dataset.gact;
+    if(act==='leave'){ groupLeave(); }
+    else if(act==='remove'){ groupRemoveMember(btn.dataset.guid, btn.dataset.gname); }
+  });
+  memberCtrlsWired=true;
 }
 async function refreshGroup(){
   if(authState.role!=='admin') return;

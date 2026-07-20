@@ -53,3 +53,7 @@ jobs:
       - name: Check web UI syntax
         shell: bash
         run: node test/ui/check_ui_syntax.mjs
+
+      - name: Check member-row rendering (hostile display names)
+        shell: bash
+        run: node test/ui/check_render_handlers.mjs
