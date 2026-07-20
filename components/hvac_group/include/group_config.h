@@ -164,8 +164,12 @@ struct ClaimOutcome {
 /// Owner side: validate an inbound pairing claim from @p joiner_uid. On success
 /// enrolls the joiner into the local peer table (persisted), burns the code,
 /// and fills the outcome with the group_id/label/secret/members. A wrong code
-/// decrements the attempt counter (and burns the code at zero).
-ClaimOutcome pairing_claim(const std::string& code, const std::string& joiner_uid);
+/// decrements the attempt counter (and burns the code at zero). @p joiner_name
+/// (optional) is the joiner's self-reported display name; when non-empty it is
+/// seeded into the replica attributed to the joiner itself, so the owner can
+/// show a friendly name immediately instead of the bare hardware id.
+ClaimOutcome pairing_claim(const std::string& code, const std::string& joiner_uid,
+                           const std::string& joiner_name = "");
 
 /// Joiner side: adopt a group from a successful claim response. Validates all
 /// fields, stores group_id/label/secret, and sets the peer list to @p members
