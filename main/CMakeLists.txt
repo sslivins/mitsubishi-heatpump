@@ -19,6 +19,7 @@ idf_component_register(
          "ota.cpp"
          "auth_manager.cpp"
          "diag.cpp"
+         "status_led.cpp"
     INCLUDE_DIRS "."
     EMBED_FILES "web/index.html.gz"
                 "web/portal.html.gz"
