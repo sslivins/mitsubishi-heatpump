@@ -9,32 +9,91 @@ It is the ground-up ESP-IDF successor to
 and preserves that project's MQTT topic contract, so existing Home Assistant
 entities keep working.
 
-> **Status: bring-up.** The architecture, threading, WiFi (incl. captive-portal
+> **Status: working.** Architecture, threading, WiFi (incl. captive-portal
 > provisioning + mDNS), the on-device web UI / REST API, the MQTT client +
-> Home Assistant discovery (climate + firmware `update` entities, state/settings
-> JSON), and the PMIC I²C driver are in place and build. The CN105 packet engine
-> is still a `TODO(port)` stub, so published telemetry reflects seeded
-> placeholder values until the serial protocol lands. CI builds green today.
+> Home Assistant discovery (climate + firmware `update` entities), the PMIC I²C
+> driver, and the **CN105 packet engine** are all in place; deployed units drive
+> real indoor units and report live telemetry. A multi-head **zone coordination**
+> layer keeps heads that share one outdoor compressor from fighting over
+> HEAT/COOL. CI builds green.
 
 ## Hardware
 
+The controller is an off-the-shelf **[M5Stack Stamp-S3Bat][stamp]** module — an
+ESP32-S3 (`ESP32-S3-PICO-1-N8R8`, 8 MB flash / 8 MB PSRAM) with an on-board
+battery/PMIC subsystem, so a single small LiPo buffers the whole thing off the
+heat pump's own 5 V rail. No custom PCB is required; you solder five wires from
+its castellated pads to a CN105 cable.
+
 | Part | Role |
 |------|------|
-| ESP32-S3-PICO-1 (8MB flash) | application MCU |
-| PY32 "M5PM1" PMIC (I²C `0x6E`) | rails, Li-ion charge gate (`CHG_EN`), VBAT/VIN telemetry |
-| LGS4056HDA | Li-ion charger (200 mA float / 650 mA preset, set in HW) |
-| 400 mAh LiPo (Adafruit 3898) | buffer for CN105 power blips + WiFi TX spikes |
+| [M5Stack Stamp-S3Bat][stamp] (`ESP32-S3-PICO-1-N8R8`) | application MCU + WiFi |
+| M5MP1 PMIC (I²C `0x6E`, on-module) | rails, Li-ion charge gate (`CHG_EN`), VBAT/VIN telemetry |
+| LGS4056HDA-4.35 (on-module) | Li-ion charger |
+| 400 mAh LiPo ([Adafruit 3898][lipo], SH1.0-2P) | buffer for CN105 power blips + WiFi TX spikes |
 
-The CN105 5V rail is current-limited, so the firmware runs a **closed-loop charge
-governor** (`m5pm1::PMIC::governor_tick`) that gates `CHG_EN` on the VIN reading
-to keep input draw within budget. See `components/m5pm1/`.
+[stamp]: https://shop.m5stack.com/products/m5stamps3-bat-module-with-battery-connector
+[lipo]: https://www.adafruit.com/product/3898
 
-### Default pin map (override in `menuconfig`)
+The CN105 5 V rail is current-limited, so the firmware runs a **closed-loop
+charge governor** (`m5pm1::PMIC::governor_tick`) that gates `CHG_EN` on the VIN
+reading to keep input draw within budget — that's what lets the module run
+directly off CN105 5 V with the LiPo absorbing transients. See
+`components/m5pm1/`. Board pinout and schematic: the
+[M5Stack Stamp-S3Bat docs][stampdocs].
 
-| Function | GPIO |
-|----------|------|
-| PMIC I²C SDA / SCL | 48 / 47 (internal bus, per S015 schematic) |
-| CN105 UART TX / RX | 1 / 2 (**confirm against your harness**) |
+[stampdocs]: https://docs.m5stack.com/en/core/Stamp-S3Bat
+
+### Default pin map (override in `menuconfig` → *Component config → mitsubishi-heatpump*)
+
+| Function | GPIO | Notes |
+|----------|------|-------|
+| CN105 UART TX (→ heat pump RX, CN105 pin 5) | **GPIO 1** | UART port 1, 2400 baud 8E1 |
+| CN105 UART RX (← heat pump TX, CN105 pin 4) | **GPIO 2** | |
+| PMIC I²C SDA / SCL | **48 / 47** | internal bus (per S015 schematic); don't remap |
+
+Defaults live in [`main/Kconfig.projbuild`](main/Kconfig.projbuild)
+(`CN105_UART_TX_PIN`, `CN105_UART_RX_PIN`, `CN105_UART_PORT`, `PMIC_I2C_*`).
+
+### CN105 connector & cable
+
+Mitsubishi indoor units expose a 5-pin **CN105** service header. The mating
+connector is a **JST PA series, 2.0 mm pitch, 5-position** housing:
+[JST **PAP-05V-S**][pap] (the DigiKey part) with **SPH-002T-P0.5S** crimp
+terminals. Crimping JST PA by hand is fiddly, so **a pre-made CN105 pigtail is
+the easy path** — search "Mitsubishi CN105 cable/pigtail"; e.g. the pre-wired
+cables from [Serin Labs][serin] are a clean, known-good option.
+
+[pap]: https://www.digikey.com/en/products/detail/jst-sales-america-inc/pap-05v-s/759977
+[serin]: https://serin-labs.com/wiring.html
+
+**CN105 pinout** (looking at the header on the indoor-unit PCB) and how it maps
+to the Stamp-S3Bat:
+
+| CN105 pin | Signal | Wire to Stamp-S3Bat |
+|-----------|--------|---------------------|
+| 1 | **12 V** | **do not connect** |
+| 2 | GND | `GND` |
+| 3 | 5 V | `5V`/`VIN` (powers the module + charges the LiPo) |
+| 4 | TX (data **from** the heat pump) | **RX** → GPIO 2 |
+| 5 | RX (data **to** the heat pump) | **TX** → GPIO 1 |
+
+The data lines are **crossed** — heat-pump TX → ESP RX, heat-pump RX → ESP TX.
+The CN105 bus is **5 V TTL** while the ESP32-S3 GPIOs are 3.3 V (not 5 V
+tolerant); many builds direct-connect and work, but a small level shifter on the
+ESP **RX** line is the electrically-correct choice. Always plug/unplug the
+connector with the unit powered **off**, and never wire pin 1 (12 V) to the ESP.
+
+Good background/wiring references (they target ESPHome/Arduino but the wiring and
+protocol are identical):
+
+- [SwiCago/HeatPump][swicago] — the original CN105 protocol library this port is based on
+- [Serin Labs wiring guide][serin] — CN105 pinout + diagrams
+- [ESPHome `mitsubishi_cn105`][esphome] and [echavet/MitsubishiCN105ESPHome][echavet]
+
+[swicago]: https://github.com/SwiCago/HeatPump
+[esphome]: https://esphome.io/components/climate/mitsubishi_cn105/
+[echavet]: https://github.com/echavet/MitsubishiCN105ESPHome
 
 ## Architecture
 
