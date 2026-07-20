@@ -61,10 +61,12 @@ Mitsubishi indoor units expose a 5-pin **CN105** service header. The mating
 connector is a **JST PA series, 2.0 mm pitch, 5-position** housing:
 [JST **PAP-05V-S**][pap] (the DigiKey part) with **SPH-002T-P0.5S** crimp
 terminals. Crimping JST PA by hand is fiddly, so **a pre-made CN105 pigtail is
-the easy path** — search "Mitsubishi CN105 cable/pigtail"; e.g. the pre-wired
-cables from [Serin Labs][serin] are a clean, known-good option.
+the easy path**. Ready-to-buy options include this
+[pre-terminated CN105 cable on Amazon][amzn] and the pre-wired cables from
+[Serin Labs][serin]; or search "Mitsubishi CN105 cable/pigtail" for more.
 
 [pap]: https://www.digikey.com/en/products/detail/jst-sales-america-inc/pap-05v-s/759977
+[amzn]: https://www.amazon.com/dp/B0DJT6D67S
 [serin]: https://serin-labs.com/wiring.html
 
 **CN105 pinout** (looking at the header on the indoor-unit PCB) and how it maps
