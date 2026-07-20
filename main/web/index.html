@@ -1458,7 +1458,13 @@ function renderGroupPanel(g){
   st.textContent=groupStatusText(g.status);
   st.className='pill '+(g.status==='ok'?'':(g.status==='indeterminate'?'limited':'full'));
   const self=g.self||{};
-  const lockMatch=(nm,uid)=>g.locked_by&&(g.locked_by===nm||g.locked_by===uid);
+  // The "holds unit" badge only makes sense during a conflict: it names the head
+  // whose mode won the shared compressor while blocking someone. When everyone
+  // agrees (ok) the compressor is simply running and nobody is being held out —
+  // and since active_now cycles with the compressor, showing it then just
+  // flickers. So gate the badge on an actual conflict.
+  const inConflict=(g.status==='conflict'||g.status==='pending_conflict');
+  const lockMatch=(nm,uid)=>inConflict&&g.locked_by&&(g.locked_by===nm||g.locked_by===uid);
   const rows=[ memberRow(self.name||self.uid,self.configured_demand,'selfdot','you',
       lockMatch(self.name,self.uid)) ];
   (g.members||[]).forEach(m=>{

@@ -958,9 +958,14 @@ void update_group_mqtt() {
         gs.status    = hvac_group::status_str(v.status);
         gs.conflict  = (v.status == hvac_group::GroupStatus::Conflict) ||
                        (v.status == hvac_group::GroupStatus::PendingConflict);
-        if (v.locked_mode != hvac_group::Demand::Neutral)
+        // Only report a lock during an actual conflict. Outside one the compressor
+        // is simply running whatever mode everyone agreed on; nobody is "held out",
+        // and active_now cycles with the compressor, so surfacing a lock holder in
+        // the ok state just flickers a name in Home Assistant. Match the web UI.
+        if (gs.conflict && v.locked_mode != hvac_group::Demand::Neutral)
             locked_mode = hvac_group::demand_str(v.locked_mode);
-        locked_by    = v.locked_by;
+        if (gs.conflict)
+            locked_by = v.locked_by;
         gs.locked_mode  = locked_mode.c_str();
         gs.locked_by    = locked_by.c_str();
         gs.member_count = static_cast<int>(g.peers.size()) + 1;
