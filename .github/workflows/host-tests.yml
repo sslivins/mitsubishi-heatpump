@@ -9,6 +9,8 @@ on:
       - 'components/hvac_group/group_proto.cpp'
       - 'components/hvac_group/include/group_proto.h'
       - 'test/host/**'
+      - 'test/ui/**'
+      - 'main/web/index.html'
       - '.github/workflows/host-tests.yml'
   pull_request:
     branches: [main]
@@ -18,6 +20,8 @@ on:
       - 'components/hvac_group/group_proto.cpp'
       - 'components/hvac_group/include/group_proto.h'
       - 'test/host/**'
+      - 'test/ui/**'
+      - 'main/web/index.html'
       - '.github/workflows/host-tests.yml'
 
 jobs:
@@ -45,3 +49,7 @@ jobs:
             test/host/test_group_proto.cpp \
             -o group_tests
           ./group_tests
+
+      - name: Check web UI syntax
+        shell: bash
+        run: node test/ui/check_ui_syntax.mjs

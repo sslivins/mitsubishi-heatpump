@@ -1588,6 +1588,7 @@ async function groupRemoveMember(uid,name){
     setTimeout(refreshGroup,700);
   }catch(e){ alert('Network error'); }
 }
+async function pollOnce(){
   await refresh();
   if(authState.role!=='admin'){ tickN++; return; }  // user role: climate only
   if(tickN%3===0) await loadWifi();
