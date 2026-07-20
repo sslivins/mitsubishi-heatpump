@@ -7,6 +7,7 @@
 #include "auth_manager.h"
 #include "group_config.h"
 #include "group_proto.h"
+#include "status_led.h"
 
 #include <cstring>
 #include <map>
@@ -832,6 +833,8 @@ bool poll_peer(const std::string& uid, hvac_group::MemberObs& out, bool& incompa
 }
 
 // Background task: poll every enrolled peer on a fixed cadence into the cache.
+void update_status_led();  // defined below; drives the onboard warning glyph
+
 void group_poll_task(void*) {
     for (;;) {
         if (hvac_group::in_group()) {
@@ -853,6 +856,7 @@ void group_poll_task(void*) {
             }
             xSemaphoreGive(s_peer_mtx);
         }
+        update_status_led();  // reflect the current group status on the LED
         vTaskDelay(pdMS_TO_TICKS(kPollIntervalMs));
     }
 }
@@ -875,6 +879,59 @@ hvac_group::MemberObs cached_peer_obs(const std::string& uid) {
     }
     xSemaphoreGive(s_peer_mtx);
     return m;
+}
+
+// Build the current group view from live self state + the freshly-polled peer
+// cache. Single source of truth shared by the web endpoint (GET /api/group) and
+// the onboard status-LED driver, so the two never disagree. When @p out is
+// non-null it receives the member list (self at index 0, then each peer).
+hvac_group::GroupView compute_group_view(std::vector<hvac_group::MemberObs>* out) {
+    cn105::Settings st  = s_hooks.get_settings ? s_hooks.get_settings() : cn105::Settings{};
+    cn105::Status   sta = s_hooks.get_status   ? s_hooks.get_status()   : cn105::Status{};
+
+    hvac_group::MemberObs self_obs;
+    self_obs.uid        = hvac_group::self_uid();
+    self_obs.name       = wifi::device_display_name();
+    self_obs.state      = hvac_group::MemberState::SelfKnown;
+    self_obs.demand     = hvac_group::classify_demand(st.power, st.mode);
+    self_obs.power_on   = (self_obs.demand != hvac_group::Demand::Neutral) ||
+                          (st.power == "ON");
+    self_obs.active_now = sta.operating;
+    // STANDBY (+ IDLE + !operating) is the hardware's "my mode is being blocked"
+    // signal — the authoritative conflict indicator (see design doc).
+    self_obs.standby    = (sta.subMode == "STANDBY") && (sta.stage == "IDLE") &&
+                          !sta.operating;
+
+    std::vector<hvac_group::MemberObs> members;
+    members.push_back(self_obs);
+    hvac_group::GroupConfig g = hvac_group::get();
+    for (const auto& uid : g.peers) members.push_back(cached_peer_obs(uid));
+
+    hvac_group::GroupView view = hvac_group::evaluate_group(members);
+    if (out) *out = std::move(members);
+    return view;
+}
+
+// Map the live group status onto the onboard warning glyph: red for a real
+// conflict, amber when the state can't be confirmed, dark otherwise.
+void update_status_led() {
+    if (!hvac_group::in_group()) {
+        status_led::set(status_led::Level::Off);
+        return;
+    }
+    hvac_group::GroupView v = compute_group_view(nullptr);
+    switch (v.status) {
+        case hvac_group::GroupStatus::Conflict:
+        case hvac_group::GroupStatus::PendingConflict:
+            status_led::set(status_led::Level::Alert);
+            break;
+        case hvac_group::GroupStatus::Indeterminate:
+            status_led::set(status_led::Level::Warn);
+            break;
+        default:
+            status_led::set(status_led::Level::Off);
+            break;
+    }
 }
 
 // ── Phase 3: coordinator-per-op resolution ─────────────────────────────
@@ -1030,32 +1087,9 @@ esp_err_t handle_group_get(httpd_req_t* req) {
     hvac_group::GroupConfig g = hvac_group::get();
     const bool grouped = hvac_group::in_group();
 
-    // Build this head's observation from live CN105 state.
-    cn105::Settings st  = s_hooks.get_settings ? s_hooks.get_settings() : cn105::Settings{};
-    cn105::Status   sta = s_hooks.get_status   ? s_hooks.get_status()   : cn105::Status{};
-
-    hvac_group::MemberObs self_obs;
-    self_obs.uid        = hvac_group::self_uid();
-    self_obs.name       = wifi::device_display_name();
-    self_obs.state      = hvac_group::MemberState::SelfKnown;
-    self_obs.demand     = hvac_group::classify_demand(st.power, st.mode);
-    self_obs.power_on   = (self_obs.demand != hvac_group::Demand::Neutral) ||
-                          (st.power == "ON");
-    self_obs.active_now = sta.operating;
-    // STANDBY (+ IDLE + !operating) is the hardware's "my mode is being blocked"
-    // signal — the authoritative conflict indicator (see design doc).
-    self_obs.standby    = (sta.subMode == "STANDBY") && (sta.stage == "IDLE") &&
-                          !sta.operating;
-
     std::vector<hvac_group::MemberObs> members;
-    members.push_back(self_obs);
-    // Merge each enrolled peer's freshly-polled state (Phase 2b). A peer without
-    // a fresh signed snapshot stays Unknown → the group reads Indeterminate.
-    for (const auto& uid : g.peers) {
-        members.push_back(cached_peer_obs(uid));
-    }
-
-    hvac_group::GroupView view = hvac_group::evaluate_group(members);
+    hvac_group::GroupView view = compute_group_view(&members);
+    const hvac_group::MemberObs& self_obs = members[0];
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "group_id", g.group_id.c_str());

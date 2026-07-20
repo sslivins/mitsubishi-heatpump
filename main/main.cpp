@@ -18,6 +18,7 @@
 #include "web_ui.h"
 #include "ota.h"
 #include "diag.h"
+#include "status_led.h"
 
 #include <cstdlib>
 #include <cstdio>
@@ -219,6 +220,10 @@ extern "C" void app_main() {
     diag::init();
 
     ota::init();
+
+    // Onboard RGB-LED warning glyph for shared-compressor conflicts. Failure to
+    // bring it up (bench board with no LED, RMT exhausted) degrades to a no-op.
+    status_led::init();
 
     // Power management first — it owns the battery/charge path.
     init_pmic();
