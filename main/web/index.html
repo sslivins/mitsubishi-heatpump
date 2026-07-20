@@ -209,8 +209,18 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 .gmode{font-size:.8em;color:var(--fg-3)}
 .glock{font-size:.66em;color:var(--orange);white-space:nowrap}
 .gmctl{display:flex;gap:4px;flex:0 0 auto}
-.gmbtn{background:none;border:1px solid var(--border);color:var(--fg-3);border-radius:6px;cursor:pointer;font-size:.8em;line-height:1;padding:3px 6px}
+.gmbtn{display:inline-flex;align-items:center;justify-content:center;min-width:40px;min-height:40px;background:none;border:1px solid var(--border);color:var(--fg-3);border-radius:8px;cursor:pointer;font-size:1.05em;line-height:1;padding:0 10px}
 .gmbtn:hover{color:var(--fg);border-color:var(--fg-3)}
+.gmbtn.leave{color:var(--red);font-size:.82em;font-weight:600}
+.gmbtn.leave:hover{border-color:var(--red)}
+.gname-row{display:flex;align-items:center;gap:8px;margin:12px 0 4px}
+.gname-row .role-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gname-row .pill{margin-left:auto;flex:0 0 auto}
+.gedit{flex:0 0 auto;width:40px;height:40px;padding:0;border:1px solid var(--border);border-radius:8px;background:none;color:var(--fg-3);cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
+.gedit:hover{color:var(--fg);border-color:var(--fg-3)}
+.gnamer{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 8px}
+.gnamer input{flex:1 1 160px;min-width:0;background:var(--bg);color:var(--fg);border:1px solid var(--accent);border-radius:8px;padding:10px;font-size:1.05em;outline:none}
+.gnamer .btn{width:auto;padding:10px 16px;margin:0}
 .gbtns{display:flex;gap:8px}
 .gbtns .btn{margin-top:0;flex:1;display:flex;align-items:center;justify-content:center;gap:6px}
 .btn-accent{background:var(--accent);color:#fff;margin-top:8px}
@@ -361,10 +371,22 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 
     <!-- In a group -->
     <div id="gInGroup" class="hidden">
-      <div class="row" style="margin:12px 0 4px">
+      <div class="gname-row">
         <span class="role-name" id="gLabel">—</span>
+        <button id="gEditBtn" class="gedit" aria-label="Rename group" title="Rename group" onclick="groupNameEdit()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        </button>
         <span class="pill" id="gStatus">—</span>
       </div>
+      <div id="gRenameRow" class="gnamer hidden">
+        <input id="gRenameInput" type="text" maxlength="32" placeholder="e.g. Upstairs"
+               autocomplete="off" autocorrect="off" spellcheck="false" onkeydown="onGroupNameKey(event)">
+        <button class="btn btn-warn" onclick="groupRename()">Save</button>
+        <button class="btn" onclick="groupNameEditCancel()">Cancel</button>
+      </div>
+      <div id="gRenameMsg" class="status hidden" style="margin:2px 0 8px"></div>
       <div id="gMembers"></div>
 
       <div id="gResolve" class="hidden" style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
@@ -379,16 +401,8 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
         <div id="gResolveMsg" class="status hidden" style="margin-top:8px"></div>
       </div>
 
-      <details class="adv">
-        <summary>Group settings</summary>
-        <label class="mqf" style="justify-content:flex-start;gap:8px;margin-bottom:8px">
-          <span style="font-size:.8em;color:var(--fg-3);flex:0 0 auto">Group name</span>
-          <input id="gRenameInput" type="text" maxlength="32" placeholder="e.g. Upstairs"
-                 autocomplete="off" style="flex:1 1 auto"></label>
-        <button class="btn" onclick="groupRename()">Rename group</button>
-        <div id="gRenameMsg" class="status hidden" style="margin:8px 0"></div>
-        <button class="btn btn-danger" style="margin-top:10px" onclick="groupLeave()">Leave group</button>
-      </details>
+      <!-- Group name rename moved to the header pencil; Leave moved to the
+           self row's button so removing any room is one consistent gesture. -->
     </div>
 
     <div id="gPairMsg" class="status hidden" style="margin-top:10px"></div>
@@ -578,6 +592,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 function $(id){return document.getElementById(id)}
 let userEditing=false;
 let nameEditing=false;
+let groupEditing=false;
 let mqEditing=false;   // pause background overwrites while the user edits the MQTT form
 let curName='';   // last-known canonical device name ('' = none set)
 let curHost='';   // mDNS hostname, used as the display fallback
@@ -1427,12 +1442,18 @@ function groupStatusText(s){
     conflict:'Conflict',indeterminate:'Unconfirmed'})[s]||s||'—';
 }
 function memberRow(name,demand,dotcls,tag,isLock,uid,isPeer){
-  // A head is named only from its own device settings (that name propagates to
-  // peers). The group page therefore offers membership actions (remove a peer)
-  // but no rename — one name per head, one place to set it.
-  const ctrls = (uid && isPeer) ? ('<span class="gmctl">'+
-      '<button class="gmbtn" title="Remove from group" onclick="groupRemoveMember(\''+gEsc(uid)+'\',\''+gEsc(name)+'\')">\u2715</button>'+
-    '</span>') : '';
+  // Removing any room from the group is one consistent gesture: peers get an
+  // ✕, this head ("you") gets a labelled Leave button in the same trailing
+  // position — bigger touch target, self-worded confirm. One name per head.
+  let ctrls='';
+  if(uid && isPeer){
+    ctrls='<span class="gmctl"><button class="gmbtn" title="Remove from group" '+
+      'aria-label="Remove '+gEsc(name)+' from group" '+
+      'onclick="groupRemoveMember(\''+gEsc(uid)+'\',\''+gEsc(name)+'\')">\u2715</button></span>';
+  } else if(uid && !isPeer){
+    ctrls='<span class="gmctl"><button class="gmbtn leave" title="Leave the group" '+
+      'aria-label="Leave the group" onclick="groupLeave()">Leave</button></span>';
+  }
   return '<div class="gmember">'+
     '<span class="gdot '+dotcls+'"></span>'+
     '<span class="gname">'+gEsc(name)+(tag?' <span class="gmode">('+gEsc(tag)+')</span>':'')+'</span>'+
@@ -1491,7 +1512,7 @@ function renderGroupPanel(g){
   });
   $('gMembers').innerHTML=rows.join('');
   $('gResolve').classList.toggle('hidden',(g.member_count||1)<=1);
-  const ri=$('gRenameInput'); if(ri&&document.activeElement!==ri) ri.value=g.group_label||'';
+  const ri=$('gRenameInput'); if(ri&&!groupEditing&&document.activeElement!==ri) ri.value=g.group_label||'';
 }
 async function refreshGroup(){
   if(authState.role!=='admin') return;
@@ -1568,6 +1589,7 @@ async function groupRename(){
     const j=await r.json().catch(()=>({}));
     if(!r.ok){ msg.className='status err'; msg.textContent=(j&&j.error)||'Rename failed'; return; }
     msg.className='status ok'; msg.textContent='Group renamed \u2014 propagating to peers\u2026';
+    groupEditing=false; $('gRenameRow').classList.add('hidden');
     setTimeout(refreshGroup,700);
   }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
 }
@@ -1579,6 +1601,22 @@ async function groupRemoveMember(uid,name){
     if(!r.ok){ const j=await r.json().catch(()=>({})); alert((j&&j.error)||'Remove failed'); return; }
     setTimeout(refreshGroup,700);
   }catch(e){ alert('Network error'); }
+}
+function groupNameEdit(){
+  groupEditing=true;
+  const ri=$('gRenameInput');
+  $('gRenameMsg').classList.add('hidden');
+  $('gRenameRow').classList.remove('hidden');
+  ri.focus(); ri.select();
+}
+function groupNameEditCancel(){
+  groupEditing=false;
+  $('gRenameRow').classList.add('hidden');
+  $('gRenameMsg').classList.add('hidden');
+}
+function onGroupNameKey(e){
+  if(e.key==='Enter'){e.preventDefault();groupRename();}
+  else if(e.key==='Escape'){e.preventDefault();groupNameEditCancel();}
 }
 async function pollOnce(){
   await refresh();
