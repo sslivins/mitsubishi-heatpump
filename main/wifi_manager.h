@@ -71,4 +71,16 @@ esp_err_t scan_json(std::string& out);
 /// Erase stored credentials so the next boot re-enters provisioning.
 esp_err_t erase_credentials();
 
+/// While an "add a zone" pairing window is open, advertise pair=1 in the
+/// _mmhvac._tcp TXT (plus the human-readable group label and this head's display
+/// name) so an ungrouped head can discover the session without typing an address.
+/// Call with active=false to clear it — the change is announced over mDNS so
+/// browsers stop offering it promptly. The pairing code is never advertised.
+void set_pairing_advert(bool active, const std::string& glabel = "",
+                        const std::string& name = "");
+
+/// Browse the LAN for heads currently advertising pair=1 and return a JSON array
+/// string: [{"uid":..,"name":..,"glabel":..,"host":"<ip>"}], excluding self.
+esp_err_t discover_pairing(std::string& out_json);
+
 }  // namespace wifi
