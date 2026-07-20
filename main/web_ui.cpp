@@ -1272,6 +1272,11 @@ esp_err_t handle_group_pair_start(httpd_req_t* req) {
     }
     hvac_group::GroupConfig g = hvac_group::get();
 
+    // Advertise pair=1 (+ group label + our display name) over mDNS so an
+    // ungrouped head can discover this window without typing an address. Cleared
+    // on stop / successful claim / expiry / lockout.
+    wifi::set_pairing_advert(true, g.group_label, wifi::device_display_name());
+
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "code", code.c_str());
     cJSON_AddNumberToObject(root, "seconds_left", hvac_group::kPairingTtlSeconds);
@@ -1291,6 +1296,7 @@ esp_err_t handle_group_pair_stop(httpd_req_t* req) {
     set_cors(req);
     REQUIRE_ADMIN(req);
     hvac_group::pairing_stop();
+    wifi::set_pairing_advert(false);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"status\":\"stopped\"}");
 }
@@ -1300,10 +1306,34 @@ esp_err_t handle_group_pair_status(httpd_req_t* req) {
     set_cors(req);
     REQUIRE_ADMIN(req);
     hvac_group::PairingStatus st = hvac_group::pairing_status();
+    // Lazily clear the mDNS pair=1 advert once the window is no longer active
+    // (covers expiry, which pairing_status() reaps). Idempotent + cheap.
+    if (!st.active) wifi::set_pairing_advert(false);
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "active", st.active);
     cJSON_AddNumberToObject(root, "seconds_left", st.seconds_left);
     cJSON_AddNumberToObject(root, "attempts_left", st.attempts_left);
+    char* str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// ── GET /api/group/pair/discover ─ browse LAN for pairing heads (admin) ─
+// Returns the heads currently advertising pair=1 so the UI can present a
+// tap-to-select list. The code is then sent to the ONE selected host via
+// pair/join — never fanned out to all responders.
+esp_err_t handle_group_pair_discover(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    std::string list;
+    esp_err_t err = wifi::discover_pairing(list);
+    if (err != ESP_OK || list.empty()) list = "[]";
+    cJSON* root = cJSON_CreateObject();
+    cJSON* cand = cJSON_Parse(list.c_str());
+    cJSON_AddItemToObject(root, "candidates", cand ? cand : cJSON_CreateArray());
     char* str = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, str);
@@ -1340,12 +1370,15 @@ esp_err_t handle_group_pair_claim(httpd_req_t* req) {
         case hvac_group::ClaimDecision::NoActiveCode:
             return send_json_error(req, "409 Conflict", "no active pairing");
         case hvac_group::ClaimDecision::Expired:
+            wifi::set_pairing_advert(false);  // window dead — stop offering it
             return send_json_error(req, "410 Gone", "code expired");
         case hvac_group::ClaimDecision::LockedOut:
+            wifi::set_pairing_advert(false);  // window locked — stop offering it
             return send_json_error(req, "429 Too Many Requests", "locked out");
         case hvac_group::ClaimDecision::BadCode:
             return send_json_error(req, "401 Unauthorized", "invalid code");
         case hvac_group::ClaimDecision::Ok:
+            wifi::set_pairing_advert(false);  // a head joined — close the advert
             break;
     }
 
@@ -1410,6 +1443,8 @@ esp_err_t handle_group_pair_join(httpd_req_t* req) {
     cfg.url = url.c_str();
     cfg.method = HTTP_METHOD_POST;
     cfg.timeout_ms = 8000;
+    cfg.disable_auto_redirect = true;  // never follow a redirect off the chosen host
+    cfg.max_redirection_count = 0;
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     if (!cli) {
         cJSON_free(reqstr);
@@ -1460,8 +1495,12 @@ esp_err_t handle_group_pair_join(httpd_req_t* req) {
     std::vector<std::string> members;
     if (gmem && cJSON_IsArray(gmem)) {
         cJSON* it = nullptr;
-        cJSON_ArrayForEach(it, gmem)
+        cJSON_ArrayForEach(it, gmem) {
+            // Bound the adopted membership — a compromised/rogue owner must not
+            // be able to inflate our peer table. 4 heads share one compressor.
+            if (members.size() >= 8) break;
             if (cJSON_IsString(it)) members.push_back(it->valuestring);
+        }
     }
     std::string group_id = (gid && cJSON_IsString(gid)) ? gid->valuestring : "";
     std::string label    = (glabel && cJSON_IsString(glabel)) ? glabel->valuestring : "";
@@ -2069,6 +2108,7 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/group/pair/start",    HTTP_POST,     handle_group_pair_start,  nullptr},
         {"/api/group/pair/stop",     HTTP_POST,     handle_group_pair_stop,   nullptr},
         {"/api/group/pair/status",   HTTP_GET,      handle_group_pair_status, nullptr},
+        {"/api/group/pair/discover", HTTP_GET,      handle_group_pair_discover, nullptr},
         {"/api/group/pair/claim",    HTTP_POST,     handle_group_pair_claim,  nullptr},
         {"/api/group/pair/join",     HTTP_POST,     handle_group_pair_join,   nullptr},
         {"/api/group/leave",         HTTP_POST,     handle_group_leave,       nullptr},

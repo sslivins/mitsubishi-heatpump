@@ -225,6 +225,19 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 .gbtns .btn{margin-top:0;flex:1;display:flex;align-items:center;justify-content:center;gap:6px}
 .btn-accent{background:var(--accent);color:#fff;margin-top:8px}
 .btn-accent:hover{filter:brightness(1.1)}
+/* Add-a-zone / discovery pairing UI */
+.gwide{width:100%;display:flex;align-items:center;justify-content:center;gap:6px;min-height:46px}
+.gjoincard{margin-top:12px;padding:14px;border:1px solid var(--accent);border-radius:12px;background:var(--info-bg)}
+.gjoin-t{font-weight:600;margin-bottom:4px}
+.gcode{font-size:1.9em;font-weight:700;letter-spacing:.18em;text-align:center;margin:6px 0;color:var(--fg);font-variant-numeric:tabular-nums}
+.gcand{display:flex;align-items:center;gap:10px;width:100%;text-align:left;min-height:56px;padding:10px 12px;margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--fg);cursor:pointer}
+.gcand:hover{border-color:var(--accent)}
+.gcand-x{flex:1;min-width:0}
+.gcand-t{font-size:1em;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gcand-s{font-size:.8em;color:var(--fg-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gcand-arrow{flex:0 0 auto;color:var(--fg-3);font-size:1.2em}
+.gadv{margin-top:12px}
+.gadv summary{cursor:pointer;color:var(--fg-3);font-size:.86em;padding:8px 0}
 /* Reusable modal dialog (replaces native alert/confirm) */
 .dlg-back{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;
   padding:20px;background:rgba(0,0,0,.55);opacity:0;transition:opacity .15s ease}
@@ -373,17 +386,42 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 
     <!-- Not in a group -->
     <div id="gNotInGroup" class="hidden">
-      <p class="role-desc" style="margin-top:12px">This head isn't in a group yet. Create one here and note the code,
-        then join every other head to it — or join a group started on another head.</p>
+      <p class="role-desc" style="margin-top:12px">This head isn't in a group yet. Join an existing group so it
+        coordinates the shared compressor with the other zones — or start a new group here.</p>
+
+      <div class="wf-head"><span class="wf-head-t">Join an existing group</span></div>
+      <p class="role-desc">On any head already in the group, open its <b>Zones</b> tab and tap
+        <b>Add a zone</b>. Then scan below and pick it — that head just relays the invite on the group's
+        behalf, so this zone joins the whole group, not that one head.</p>
+      <button class="btn btn-warn gwide" onclick="groupDiscover()">Scan for groups</button>
+      <div id="gDiscoverMsg" class="status hidden" style="margin-top:8px"></div>
+      <div id="gCandidates"></div>
+
+      <!-- Code entry for the tapped candidate -->
+      <div id="gJoinCard" class="gjoincard hidden">
+        <div id="gJoinTitle" class="gjoin-t"></div>
+        <div id="gJoinSub" class="role-desc" style="margin:2px 0 8px"></div>
+        <div class="mqf"><label for="gJoinCode">6-digit code</label>
+          <input id="gJoinCode" type="text" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off"></div>
+        <div class="gbtns">
+          <button class="btn btn-accent" onclick="groupJoinSelected()">Add this zone</button>
+          <button class="btn" onclick="groupJoinCancel()">Cancel</button>
+        </div>
+      </div>
+
+      <details class="gadv">
+        <summary>Can't find it? Enter the head's address manually</summary>
+        <div class="mqf"><label for="gJoinHost">Owner host</label>
+          <input id="gJoinHost" type="text" placeholder="mitsubishi-heatpump-xxxx.local" autocomplete="off"></div>
+        <div class="mqf"><label for="gJoinCodeM">6-digit code</label>
+          <input id="gJoinCodeM" type="text" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off"></div>
+        <button class="btn btn-warn" onclick="groupPairJoinManual()">Join by address</button>
+      </details>
+
+      <div class="wf-head"><span class="wf-head-t">Or start a new group</span></div>
       <div class="mqf"><label for="gNewLabel">Group name</label>
         <input id="gNewLabel" type="text" maxlength="32" placeholder="e.g. Upstairs" autocomplete="off"></div>
       <button class="btn btn-accent" onclick="groupPairStart()">Create group &amp; show code</button>
-      <div class="wf-head"><span class="wf-head-t">Or join an existing group</span></div>
-      <div class="mqf"><label for="gJoinHost">Owner host</label>
-        <input id="gJoinHost" type="text" placeholder="mitsubishi-heatpump-xxxx.local" autocomplete="off"></div>
-      <div class="mqf"><label for="gJoinCode">6-digit code</label>
-        <input id="gJoinCode" type="text" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off"></div>
-      <button class="btn btn-warn" onclick="groupPairJoin()">Join group</button>
     </div>
 
     <!-- In a group -->
@@ -405,6 +443,17 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
       </div>
       <div id="gRenameMsg" class="status hidden" style="margin:2px 0 8px"></div>
       <div id="gMembers"></div>
+
+      <!-- Owner: open a pairing window so a new head can join this group -->
+      <button class="btn btn-accent gwide" onclick="groupAddZone()">+ Add a zone</button>
+      <div id="gAddZoneCard" class="gjoincard hidden">
+        <div class="gjoin-t">Add a zone to this group</div>
+        <div class="role-desc" style="margin:2px 0 6px">On the new head, choose <b>Join an existing group</b>,
+          pick this one, then enter this code:</div>
+        <div id="gAddCode" class="gcode">------</div>
+        <div id="gAddCountdown" class="role-desc" style="text-align:center"></div>
+        <button class="btn gwide" onclick="groupAddZoneCancel()">Cancel</button>
+      </div>
 
       <!-- Mode switching is coordinated from the Climate tab: switching to
            Heat/Cool there prompts to move every zone, so there are no manual
@@ -1636,20 +1685,125 @@ async function groupPairStart(){
     setTimeout(refreshGroup,700);
   }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
 }
-async function groupPairJoin(){
-  const host=$('gJoinHost').value.trim(), code=$('gJoinCode').value.trim();
+let gSelHost='';  // host of the tapped discovery candidate (single selected target)
+// Scan the LAN for heads currently offering to add a zone (advertising pair=1).
+async function groupDiscover(){
+  const msg=$('gDiscoverMsg'); msg.className='status info'; msg.classList.remove('hidden');
+  msg.textContent='Scanning\u2026';
+  $('gCandidates').innerHTML=''; groupJoinCancel();
+  try{
+    const r=await jget('/api/group/pair/discover');
+    const j=await r.json().catch(()=>({candidates:[]}));
+    const list=(j&&j.candidates)||[];
+    if(!list.length){
+      msg.className='status'; msg.textContent='No head is inviting a new zone right now. On a head already in the group, tap “Add a zone”, then scan again.';
+      return;
+    }
+    msg.classList.add('hidden');
+    renderCandidates(list);
+  }catch(e){ msg.className='status err'; msg.textContent='Scan failed \u2014 network error.'; }
+}
+function renderCandidates(list){
+  const box=$('gCandidates'); box.innerHTML='';
+  list.forEach(c=>{
+    const group=c.glabel&&c.glabel.trim()?c.glabel:'Unnamed group';
+    const via=c.name&&c.name.trim()?c.name:(c.uid||'a head');
+    const b=document.createElement('button'); b.className='gcand';
+    const x=document.createElement('div'); x.className='gcand-x';
+    const t=document.createElement('div'); t.className='gcand-t'; t.textContent=group;
+    const s=document.createElement('div'); s.className='gcand-s'; s.textContent='offered by '+via;
+    x.appendChild(t); x.appendChild(s);
+    const a=document.createElement('div'); a.className='gcand-arrow'; a.textContent='\u203a';
+    b.appendChild(x); b.appendChild(a);
+    b.addEventListener('click',()=>selectCandidate(c.host,group,via));
+    box.appendChild(b);
+  });
+}
+function selectCandidate(host,group,via){
+  gSelHost=host;
+  $('gJoinTitle').textContent='Add this zone to “'+group+'”';
+  $('gJoinSub').textContent='“'+via+'” is relaying the invite for the group. Enter the 6-digit code shown on it.';
+  $('gJoinCode').value='';
+  $('gJoinCard').classList.remove('hidden');
+  $('gJoinCode').focus();
+}
+function groupJoinCancel(){ gSelHost=''; $('gJoinCard').classList.add('hidden'); }
+async function groupJoinSelected(){
+  const code=($('gJoinCode').value||'').trim();
   const msg=$('gPairMsg'); msg.className='status info'; msg.classList.remove('hidden');
-  if(!host||!code){ msg.className='status err'; msg.textContent="Enter the owner head's host and the 6-digit code."; return; }
+  if(!gSelHost){ msg.className='status err'; msg.textContent='Pick a group to join first.'; return; }
+  if(!code){ msg.className='status err'; msg.textContent='Enter the 6-digit code.'; return; }
+  msg.textContent='Adding this zone\u2026';
+  await joinViaHost(gSelHost,code,msg);
+}
+// Manual fallback: type the head's address + code directly.
+async function groupPairJoinManual(){
+  const host=$('gJoinHost').value.trim(), code=$('gJoinCodeM').value.trim();
+  const msg=$('gPairMsg'); msg.className='status info'; msg.classList.remove('hidden');
+  if(!host||!code){ msg.className='status err'; msg.textContent="Enter the head's address and the 6-digit code."; return; }
   msg.textContent='Joining\u2026';
+  await joinViaHost(host,code,msg);
+}
+async function joinViaHost(host,code,msg){
   try{
     const r=await fetch('/api/group/pair/join',{method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({owner_host:host,code:code})});
     const j=await r.json().catch(()=>({}));
-    if(!r.ok){ msg.className='status err'; msg.textContent=(j&&j.error)||'Join failed'; return; }
-    msg.className='status ok'; msg.textContent='Joined the group.';
+    if(!r.ok){ msg.className='status err'; msg.textContent=(j&&j.error)||'Could not add this zone.'; return; }
+    msg.className='status ok'; msg.textContent='Added to “'+(j.group_label||'the group')+'”.';
+    groupJoinCancel();
     setTimeout(refreshGroup,700);
   }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
+}
+// ── Owner: open a pairing window so a new head can join this group ──────
+let gAddTimer=null, gAddDeadline=0, gAddBaseCount=0;
+async function groupAddZone(){
+  const msg=$('gPairMsg'); msg.className='status info'; msg.classList.remove('hidden');
+  msg.textContent='Opening\u2026';
+  try{
+    const r=await fetch('/api/group/pair/start',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ msg.className='status err'; msg.textContent=(j&&j.error)||'Could not open pairing.'; return; }
+    msg.classList.add('hidden');
+    // Record current member count so we can tell a join from an expiry.
+    try{ const gr=await jget('/api/group'); const g=await gr.json(); gAddBaseCount=g.member_count||1; }catch(e){ gAddBaseCount=0; }
+    $('gAddCode').textContent=j.code;
+    $('gAddZoneCard').classList.remove('hidden');
+    gAddDeadline=Date.now()+((j.seconds_left||120)*1000);
+    if(gAddTimer) clearInterval(gAddTimer);
+    gAddTimer=setInterval(pollAddZone,1500);
+    pollAddZone();
+  }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
+}
+async function pollAddZone(){
+  const left=Math.max(0,Math.round((gAddDeadline-Date.now())/1000));
+  $('gAddCountdown').textContent='Expires in '+left+'s';
+  let st;
+  try{ const r=await jget('/api/group/pair/status'); st=await r.json(); }catch(e){ return; }
+  if(st.active){
+    if(typeof st.seconds_left==='number') gAddDeadline=Date.now()+st.seconds_left*1000;
+    return;
+  }
+  // Window closed — a head joined or it expired/locked out.
+  closeAddZone();
+  const msg=$('gPairMsg'); msg.classList.remove('hidden');
+  let joined=false;
+  try{ const r=await jget('/api/group'); const g=await r.json(); joined=(g.member_count||0)>gAddBaseCount; }catch(e){}
+  if(joined){ msg.className='status ok'; msg.textContent='A zone joined the group.'; }
+  else{ msg.className='status'; msg.textContent='Pairing window closed.'; }
+  refreshGroup();
+}
+function closeAddZone(){
+  if(gAddTimer){ clearInterval(gAddTimer); gAddTimer=null; }
+  $('gAddZoneCard').classList.add('hidden');
+}
+async function groupAddZoneCancel(){
+  closeAddZone();
+  try{ await fetch('/api/group/pair/stop',{method:'POST'}); }catch(e){}
+  const msg=$('gPairMsg'); msg.className='status'; msg.classList.remove('hidden'); msg.textContent='Pairing cancelled.';
+  refreshGroup();
 }
 async function groupLeave(){
   if(!(await uiConfirm({title:'Leave the group?',body:'This head will stop coordinating mode with the others.',okText:'Leave',danger:true}))) return;

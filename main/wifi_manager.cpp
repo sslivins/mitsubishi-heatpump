@@ -291,6 +291,93 @@ esp_err_t start_provisioning() {
 }
 }  // namespace
 
+// ── Pairing discovery (public) ─────────────────────────────────────────
+// While an "add a zone" pairing window is open, the owning head advertises
+// pair=1 in its _mmhvac._tcp TXT (plus the human-readable group label and its
+// own display name) so an ungrouped head can *discover* the pairing session
+// without the user typing an address. The TXT is cleared the moment the window
+// closes (join/cancel/expiry/lockout) — mDNS announces the update so browsers
+// stop offering it promptly. The pairing code itself is NEVER advertised; it is
+// only ever exchanged over the authenticated claim, so pair=1 leaks nothing but
+// "this head is currently accepting one new member".
+void set_pairing_advert(bool active, const std::string& glabel,
+                        const std::string& name) {
+    if (active) {
+        mdns_service_txt_item_set("_mmhvac", "_tcp", "pair", "1");
+        // Non-empty only; keep the TXT small and avoid empty-value quirks.
+        if (!glabel.empty())
+            mdns_service_txt_item_set("_mmhvac", "_tcp", "glabel", glabel.c_str());
+        else
+            mdns_service_txt_item_remove("_mmhvac", "_tcp", "glabel");
+        if (!name.empty())
+            mdns_service_txt_item_set("_mmhvac", "_tcp", "name", name.c_str());
+        else
+            mdns_service_txt_item_remove("_mmhvac", "_tcp", "name");
+    } else {
+        mdns_service_txt_item_remove("_mmhvac", "_tcp", "pair");
+        mdns_service_txt_item_remove("_mmhvac", "_tcp", "glabel");
+        mdns_service_txt_item_remove("_mmhvac", "_tcp", "name");
+    }
+}
+
+// Browse the LAN for heads currently advertising pair=1 and return a JSON array
+// [{"uid":..,"name":..,"glabel":..,"host":"<ip>"}], excluding ourselves. The
+// caller (the ungrouped head's web UI) presents this list so the user taps the
+// intended group — the code is then sent to that ONE selected host only, never
+// fanned out. Bounded to a handful of results with a short query timeout.
+esp_err_t discover_pairing(std::string& out_json) {
+    mdns_result_t* results = nullptr;
+    esp_err_t err = mdns_query_ptr("_mmhvac", "_tcp", 2500, 20, &results);
+    if (err != ESP_OK) return err;
+
+    const std::string self_uid = device_uid();
+    cJSON* arr = cJSON_CreateArray();
+    for (mdns_result_t* r = results; r; r = r->next) {
+        // Read TXT: require pair=1; collect uid/name/glabel.
+        bool pairing = false;
+        std::string uid, name, glabel;
+        for (size_t i = 0; i < r->txt_count; i++) {
+            const char* k = r->txt[i].key;
+            const char* v = r->txt[i].value ? r->txt[i].value : "";
+            if (!k) continue;
+            if (!strcmp(k, "pair"))        pairing = (!strcmp(v, "1"));
+            else if (!strcmp(k, "uid"))    uid = v;
+            else if (!strcmp(k, "name"))   name = v;
+            else if (!strcmp(k, "glabel")) glabel = v;
+        }
+        if (!pairing) continue;
+        if (!uid.empty() && uid == self_uid) continue;  // never offer ourselves
+
+        // First IPv4 address wins.
+        char ip[16] = {0};
+        for (mdns_ip_addr_t* a = r->addr; a; a = a->next) {
+            if (a->addr.type == ESP_IPADDR_TYPE_V4) {
+                uint32_t v = a->addr.u_addr.ip4.addr;  // LSB = first octet
+                snprintf(ip, sizeof(ip), "%u.%u.%u.%u",
+                         (unsigned)(v & 0xff), (unsigned)((v >> 8) & 0xff),
+                         (unsigned)((v >> 16) & 0xff), (unsigned)((v >> 24) & 0xff));
+                break;
+            }
+        }
+        if (ip[0] == '\0') continue;  // no usable address
+
+        cJSON* o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "uid",    uid.c_str());
+        cJSON_AddStringToObject(o, "name",   name.c_str());
+        cJSON_AddStringToObject(o, "glabel", glabel.c_str());
+        cJSON_AddStringToObject(o, "host",   ip);
+        cJSON_AddItemToArray(arr, o);
+    }
+    mdns_query_results_free(results);
+
+    char* s = cJSON_PrintUnformatted(arr);
+    cJSON_Delete(arr);
+    if (!s) return ESP_ERR_NO_MEM;
+    out_json = s;
+    cJSON_free(s);
+    return ESP_OK;
+}
+
 // ── Identity (public) ──────────────────────────────────────────────────
 // Short, stable per-chip id from the low 2 bytes of the factory base MAC
 // (Espressif assigns every chip a globally-unique MAC, so this is collision-free
