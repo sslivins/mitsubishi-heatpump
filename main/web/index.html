@@ -406,17 +406,9 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
       <div id="gRenameMsg" class="status hidden" style="margin:2px 0 8px"></div>
       <div id="gMembers"></div>
 
-      <div id="gResolve" class="hidden" style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
-        <p class="wf-head-t" style="margin-bottom:8px">Resolve — set the whole group's mode</p>
-        <div class="gbtns">
-          <button class="btn btn-warn" onclick="groupResolve('HEAT')"><span>☀</span>All → Heat</button>
-          <button class="btn btn-warn" onclick="groupResolve('COOL')"><span>❄</span>All → Cool</button>
-        </div>
-        <label class="mqf" style="margin-top:10px;justify-content:flex-start;gap:8px">
-          <input type="checkbox" id="gOffToggle" style="flex:0 0 auto;max-width:none;width:auto">
-          <span style="font-size:.8em;color:var(--fg-3)">Turn conflicting zones OFF instead of flipping their mode</span></label>
-        <div id="gResolveMsg" class="status hidden" style="margin-top:8px"></div>
-      </div>
+      <!-- Mode switching is coordinated from the Climate tab: switching to
+           Heat/Cool there prompts to move every zone, so there are no manual
+           "resolve" buttons here. -->
 
       <!-- Group name rename moved to the header pencil; Leave moved to the
            self row's button so removing any room is one consistent gesture. -->
@@ -864,7 +856,15 @@ async function post(body){
 }
 
 function setField(k,v){const o={};o[k]=v;post(o)}
-function setMode(m){
+async function setMode(m){
+  if((m==='HEAT'||m==='COOL') && await needsGroupSwitch(m)){
+    const ok=await uiConfirm({title:'Switch all zones to '+modeCap(m)+'?',
+      body:'Switching to '+modeCap(m)+' requires all zones to be switched to '+modeCap(m)+'.',
+      okText:'Switch all zones'});
+    if(!ok) return;
+    await switchAllZones(m);
+    return;
+  }
   if(m==='OFF'){climate.power=false;renderClimate();post({power:'OFF'});return;}
   climate.power=true;climate.mode=m;renderClimate();
   post({power:'ON',mode:m});
@@ -1580,7 +1580,6 @@ function renderGroupPanel(g){
       lockMatch(m.name,m.uid),m.uid,true));
   });
   $('gMembers').innerHTML=rows.join('');
-  $('gResolve').classList.toggle('hidden',(g.member_count||1)<=1);
   const ri=$('gRenameInput'); if(ri&&!groupEditing&&document.activeElement!==ri) ri.value=g.group_label||'';
 }
 async function refreshGroup(){
@@ -1591,23 +1590,33 @@ async function refreshGroup(){
   renderGroupBanner(g);
   renderGroupPanel(g);
 }
-async function groupResolve(mode){
-  const strat=$('gOffToggle').checked?'off_conflicting':'flip';
-  const msg=$('gResolveMsg'); msg.className='status info'; msg.classList.remove('hidden');
-  msg.textContent='Resolving \u2192 '+mode+'\u2026';
+function modeCap(m){ return m.charAt(0)+m.slice(1).toLowerCase(); }
+// True when switching THIS head to Heat/Cool would diverge from the shared
+// outdoor unit's current direction — i.e. another zone is on the opposite mode,
+// or the unit is already inferred locked the other way. Only admins coordinate.
+async function needsGroupSwitch(m){
+  if(authState.role!=='admin') return false;
+  let g;
+  try{ const r=await jget('/api/group'); if(!r.ok) return false; g=await r.json(); }
+  catch(e){ return false; }
+  if(!g.in_group || (g.member_count||1)<=1) return false;
+  const opp=(m==='HEAT')?'COOL':'HEAT';
+  if(g.locked_mode===opp) return true;
+  return (g.members||[]).some(mem=>mem.state==='known' && mem.configured_demand===opp);
+}
+// Coordinate the whole group onto one mode (every zone flips to it). Invoked by
+// the climate-page confirm when a plain mode switch would otherwise conflict.
+async function switchAllZones(m){
   try{
     const r=await fetch('/api/group/resolve',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({target_mode:mode,strategy:strat})});
+      body:JSON.stringify({target_mode:m,strategy:'flip'})});
     const j=await r.json().catch(()=>({}));
-    if(!r.ok){ msg.className='status err'; msg.textContent=(j&&j.error)||'Resolve failed'; return; }
-    const parts=['you: '+(j.self?j.self.result:'?')];
-    (j.results||[]).forEach(x=>parts.push((x.uid||'?')+': '+x.result));
-    const ok=(j.status==='ok');
-    msg.className='status '+(ok?'ok':'err');
-    msg.textContent=(ok?'\u2713 ':'\u26A0 partial \u2014 ')+'all \u2192 '+(j.target_mode||mode)+' ('+parts.join(', ')+')';
-  }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
-  setTimeout(refreshGroup,700);
+    if(!r.ok){ await uiAlert({title:'Could not switch zones',body:(j&&j.error)||'The group did not accept the change.'}); return; }
+    if(j.status!=='ok'){ await uiAlert({title:'Partially switched',body:'Some zones did not confirm the switch to '+modeCap(m)+'. Check the Zones tab.'}); }
+    climate.power=true; climate.mode=m; renderClimate();
+    setTimeout(()=>{ refresh(); if(authState.role==='admin') refreshGroup(); },700);
+  }catch(e){ await uiAlert({title:'Network error',body:'Could not reach the device.'}); }
 }
 async function groupPairStart(){
   const msg=$('gPairMsg'); msg.className='status info'; msg.classList.remove('hidden');
