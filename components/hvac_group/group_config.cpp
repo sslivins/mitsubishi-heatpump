@@ -492,7 +492,8 @@ PairingStatus pairing_status() {
     return st;
 }
 
-ClaimOutcome pairing_claim(const std::string& code, const std::string& joiner_uid) {
+ClaimOutcome pairing_claim(const std::string& code, const std::string& joiner_uid,
+                           const std::string& joiner_name) {
     Lock lk;
     ClaimOutcome out;
 
@@ -524,6 +525,12 @@ ClaimOutcome pairing_claim(const std::string& code, const std::string& joiner_ui
             // reproject + persist. Snapshot so a persist failure fully rolls back.
             GroupReplica prev = s_replica;
             replica_add_member(s_replica, joiner_uid);
+            // Seed the joiner's self-reported name, attributed to the joiner as
+            // the writer — this preserves the "a head is named only by itself"
+            // invariant and no-ops when the joiner later re-asserts the same
+            // name via note_self_name.
+            if (!joiner_name.empty())
+                replica_set_name(s_replica, joiner_uid, sanitize_label(joiner_name), joiner_uid);
             reproject_locked();
             if (persist_locked(s_cfg) != ESP_OK) {
                 // Persist failed: report as if no code was active and leave the

@@ -1361,11 +1361,14 @@ esp_err_t handle_group_pair_claim(httpd_req_t* req) {
     }
     const cJSON* juid  = cJSON_GetObjectItem(json, "joiner_uid");
     const cJSON* jcode = cJSON_GetObjectItem(json, "code");
+    const cJSON* jname = cJSON_GetObjectItem(json, "joiner_name");
     std::string joiner = (juid && cJSON_IsString(juid)) ? juid->valuestring : "";
     std::string code   = (jcode && cJSON_IsString(jcode)) ? jcode->valuestring : "";
+    std::string jn     = (jname && cJSON_IsString(jname)) ? jname->valuestring : "";
+    if (jn.size() > 48) jn.resize(48);  // bound the self-reported name
     cJSON_Delete(json);
 
-    hvac_group::ClaimOutcome oc = hvac_group::pairing_claim(code, joiner);
+    hvac_group::ClaimOutcome oc = hvac_group::pairing_claim(code, joiner, jn);
     switch (oc.decision) {
         case hvac_group::ClaimDecision::NoActiveCode:
             return send_json_error(req, "409 Conflict", "no active pairing");
@@ -1435,6 +1438,9 @@ esp_err_t handle_group_pair_join(httpd_req_t* req) {
     cJSON* reqbody = cJSON_CreateObject();
     cJSON_AddStringToObject(reqbody, "joiner_uid", hvac_group::self_uid().c_str());
     cJSON_AddStringToObject(reqbody, "code", code.c_str());
+    // Include our friendly name so the owner can show/seed it immediately
+    // instead of falling back to our short hardware id until gossip catches up.
+    cJSON_AddStringToObject(reqbody, "joiner_name", wifi::device_display_name().c_str());
     char* reqstr = cJSON_PrintUnformatted(reqbody);
     cJSON_Delete(reqbody);
 
@@ -1481,7 +1487,7 @@ esp_err_t handle_group_pair_join(httpd_req_t* req) {
     if (status != 200) {
         const char* msg;
         switch (status) {
-            case 401: msg = "That code wasn't right. Double-check it and try again."; break;
+            case 401: msg = "Incorrect code. Please try again."; break;
             case 410: msg = "That code expired. On the other head, tap Add a zone for a new code."; break;
             case 429: msg = "Too many tries. The other head paused pairing; tap Add a zone on it again."; break;
             case 409: msg = "The other head isn't inviting a new zone right now."; break;
