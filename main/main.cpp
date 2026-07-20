@@ -22,6 +22,8 @@
 
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
+#include <strings.h>
 #include <string>
 #include <mutex>
 
@@ -158,7 +160,25 @@ void on_mqtt_command(const hvac_mqtt::Command& cmd) {
     using K = hvac_mqtt::Command::Kind;
     switch (cmd.kind) {
         case K::Power:       g_hp.setPowerSetting(cmd.value); break;
-        case K::Mode:        g_hp.setModeSetting(cmd.value); break;
+        case K::Mode: {
+            // Home Assistant (and the group coordinator) express "off" as a
+            // climate mode, but the CN105 keeps power and mode separate. The
+            // native mode map has no "off"/"fan_only" entry, so passing those
+            // straight to setModeSetting() falls through to the first mode
+            // (HEAT) and leaves the unit powered on — which is why turning a
+            // cooling head off from HA made it switch to heat. Translate here:
+            // "off" powers the unit down; any real mode powers it on (mapping
+            // HA's "fan_only" to the native "FAN").
+            if (strcasecmp(cmd.value.c_str(), "off") == 0) {
+                g_hp.setPowerSetting("OFF");
+            } else {
+                g_hp.setPowerSetting("ON");
+                const char* mode = cmd.value.c_str();
+                if (strcasecmp(mode, "fan_only") == 0) mode = "FAN";
+                g_hp.setModeSetting(mode);
+            }
+            break;
+        }
         case K::Temperature: g_hp.setTemperature(strtof(cmd.value.c_str(), nullptr)); break;
         case K::Fan:         g_hp.setFanSpeed(cmd.value); break;
         case K::Vane:        g_hp.setVaneSetting(cmd.value); break;
