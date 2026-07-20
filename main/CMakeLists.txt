@@ -23,6 +23,10 @@ idf_component_register(
     INCLUDE_DIRS "."
     EMBED_FILES "web/index.html.gz"
                 "web/portal.html.gz"
+                "web/icon-180.png"
+                "web/icon-192.png"
+                "web/icon-512.png"
+                "web/manifest.webmanifest"
     REQUIRES nvs_flash esp_wifi esp_netif esp_event esp_driver_i2c
              driver esp_timer esp_app_format esp_http_server json lwip
              app_update esp_https_ota esp_http_client mbedtls

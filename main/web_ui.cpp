@@ -33,6 +33,16 @@ static const char* TAG = "web";
 extern const uint8_t index_html_gz_start[] asm("_binary_index_html_gz_start");
 extern const uint8_t index_html_gz_end[]   asm("_binary_index_html_gz_end");
 
+// Embedded PWA icons + web app manifest (served raw; PNGs are already compressed).
+extern const uint8_t icon_180_png_start[] asm("_binary_icon_180_png_start");
+extern const uint8_t icon_180_png_end[]   asm("_binary_icon_180_png_end");
+extern const uint8_t icon_192_png_start[] asm("_binary_icon_192_png_start");
+extern const uint8_t icon_192_png_end[]   asm("_binary_icon_192_png_end");
+extern const uint8_t icon_512_png_start[] asm("_binary_icon_512_png_start");
+extern const uint8_t icon_512_png_end[]   asm("_binary_icon_512_png_end");
+extern const uint8_t manifest_start[]     asm("_binary_manifest_webmanifest_start");
+extern const uint8_t manifest_end[]       asm("_binary_manifest_webmanifest_end");
+
 namespace web_ui {
 
 namespace {
@@ -178,6 +188,26 @@ esp_err_t handle_root(httpd_req_t* req) {
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     return httpd_resp_send(req, (const char*)index_html_gz_start, len);
+}
+
+// ── PWA icons + manifest (public, cached) ──────────────────────────────
+static esp_err_t send_asset(httpd_req_t* req, const uint8_t* start,
+                            const uint8_t* end, const char* ctype) {
+    httpd_resp_set_type(req, ctype);
+    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=604800");
+    return httpd_resp_send(req, (const char*)start, (size_t)(end - start));
+}
+esp_err_t handle_icon_180(httpd_req_t* req) {
+    return send_asset(req, icon_180_png_start, icon_180_png_end, "image/png");
+}
+esp_err_t handle_icon_192(httpd_req_t* req) {
+    return send_asset(req, icon_192_png_start, icon_192_png_end, "image/png");
+}
+esp_err_t handle_icon_512(httpd_req_t* req) {
+    return send_asset(req, icon_512_png_start, icon_512_png_end, "image/png");
+}
+esp_err_t handle_manifest(httpd_req_t* req) {
+    return send_asset(req, manifest_start, manifest_end, "application/manifest+json");
 }
 
 // ── GET /api/status ────────────────────────────────────────────────────
@@ -2081,7 +2111,7 @@ esp_err_t init(const Hooks& hooks) {
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn = httpd_uri_match_wildcard;
-    cfg.max_uri_handlers = 40;
+    cfg.max_uri_handlers = 44;
     cfg.stack_size = 8192;
     // The default 7 sockets reserve 3 for internal use, leaving only 4 for
     // clients — fewer than the 6 keep-alive connections a single browser tab
@@ -2104,6 +2134,10 @@ esp_err_t init(const Hooks& hooks) {
 
     const httpd_uri_t uris[] = {
         {"/",                        HTTP_GET,     handle_root,           nullptr},
+        {"/manifest.webmanifest",    HTTP_GET,     handle_manifest,       nullptr},
+        {"/icon-180.png",            HTTP_GET,     handle_icon_180,       nullptr},
+        {"/icon-192.png",            HTTP_GET,     handle_icon_192,       nullptr},
+        {"/icon-512.png",            HTTP_GET,     handle_icon_512,       nullptr},
         {"/api/status",              HTTP_GET,     handle_status,         nullptr},
         {"/api/settings",            HTTP_GET,     handle_get_settings,   nullptr},
         {"/api/settings",            HTTP_POST,    handle_post_settings,  nullptr},
