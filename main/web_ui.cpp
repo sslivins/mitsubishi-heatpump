@@ -864,7 +864,7 @@ void group_poll_task(void*) {
     // Seed our own display name into the replica once at boot so peers learn it
     // even if it was set before this firmware gained name propagation.
     if (hvac_group::in_group())
-        hvac_group::note_self_name(wifi::device_display_name(), /*seed_only=*/true);
+        hvac_group::note_self_name(wifi::device_display_name());
     for (;;) {
         if (hvac_group::in_group()) {
             hvac_group::GroupConfig g = hvac_group::get();
@@ -924,12 +924,7 @@ hvac_group::GroupView compute_group_view(std::vector<hvac_group::MemberObs>* out
 
     hvac_group::MemberObs self_obs;
     self_obs.uid        = hvac_group::self_uid();
-    // Prefer the replicated (converged) display name so self is consistent with
-    // how peers render this head; fall back to the local device name.
-    {
-        std::string rep = hvac_group::member_display_name(self_obs.uid);
-        self_obs.name   = rep.empty() ? wifi::device_display_name() : rep;
-    }
+    self_obs.name       = wifi::device_display_name();
     self_obs.state      = hvac_group::MemberState::SelfKnown;
     self_obs.demand     = hvac_group::classify_demand(st.power, st.mode);
     self_obs.power_on   = (self_obs.demand != hvac_group::Demand::Neutral) ||
@@ -1484,8 +1479,8 @@ esp_err_t handle_group_pair_join(httpd_req_t* req) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "could not adopt group");
         return ESP_FAIL;
     }
-    // Seed our own display name into the freshly-adopted replica so it propagates.
-    hvac_group::note_self_name(wifi::device_display_name(), /*seed_only=*/true);
+    // Record our own display name into the freshly-adopted replica so it propagates.
+    hvac_group::note_self_name(wifi::device_display_name());
 
     hvac_group::GroupConfig g = hvac_group::get();
     cJSON* root = cJSON_CreateObject();
@@ -1753,41 +1748,10 @@ esp_err_t handle_group_member_remove(httpd_req_t* req) {
     return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
 }
 
-// ── POST /api/group/member/rename ─ rename any member (admin) ──────────
-// Body: {"uid":"<member>","name":"<display>"}. Sets the member's replicated
-// (LWW) display name, which converges across all heads.
-esp_err_t handle_group_member_rename(httpd_req_t* req) {
-    set_cors(req);
-    REQUIRE_ADMIN(req);
-    char* body = recv_body(req);
-    if (!body) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
-        return ESP_FAIL;
-    }
-    cJSON* json = cJSON_Parse(body);
-    free(body);
-    if (!json) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
-        return ESP_FAIL;
-    }
-    const cJSON* ju = cJSON_GetObjectItem(json, "uid");
-    const cJSON* jn = cJSON_GetObjectItem(json, "name");
-    std::string uid  = (ju && cJSON_IsString(ju)) ? ju->valuestring : "";
-    std::string name = (jn && cJSON_IsString(jn)) ? jn->valuestring : "";
-    cJSON_Delete(json);
-    if (!hvac_group::is_valid_uid(uid))
-        return send_json_error(req, "400 Bad Request", "invalid uid");
-
-    esp_err_t err = hvac_group::set_member_name(uid, name);
-    if (err == ESP_ERR_INVALID_STATE)
-        return send_json_error(req, "409 Conflict", "not in a group");
-    if (err != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS write failed");
-        return ESP_FAIL;
-    }
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
-}
+// ── POST /api/group/member/remove handled above. There is intentionally no
+// member-rename endpoint: a head is named solely by its own device display
+// name (POST /api/device), which propagates to peers via the replica. A single
+// name per head, set in one place, avoids a second competing name authority.
 
 esp_err_t handle_wifi_get(httpd_req_t* req) {
     set_cors(req);
@@ -2112,7 +2076,6 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/group/resolve",       HTTP_POST,     handle_group_resolve,     nullptr},
         {"/api/group/label",         HTTP_POST,     handle_group_label,       nullptr},
         {"/api/group/member/remove", HTTP_POST,     handle_group_member_remove, nullptr},
-        {"/api/group/member/rename", HTTP_POST,     handle_group_member_rename, nullptr},
         {"/api/wifi",                HTTP_GET,      handle_wifi_get,       nullptr},
         {"/api/scan",                HTTP_GET,      handle_scan,           nullptr},
         {"/api/wifi",                HTTP_POST,     handle_wifi_post,      nullptr},

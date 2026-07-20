@@ -1427,9 +1427,11 @@ function groupStatusText(s){
     conflict:'Conflict',indeterminate:'Unconfirmed'})[s]||s||'—';
 }
 function memberRow(name,demand,dotcls,tag,isLock,uid,isPeer){
-  const ctrls = uid ? ('<span class="gmctl">'+
-      '<button class="gmbtn" title="Rename" onclick="groupRenameMember(\''+gEsc(uid)+'\',\''+gEsc(name)+'\')">\u270E</button>'+
-      (isPeer?'<button class="gmbtn" title="Remove from group" onclick="groupRemoveMember(\''+gEsc(uid)+'\',\''+gEsc(name)+'\')">\u2715</button>':'')+
+  // A head is named only from its own device settings (that name propagates to
+  // peers). The group page therefore offers membership actions (remove a peer)
+  // but no rename — one name per head, one place to set it.
+  const ctrls = (uid && isPeer) ? ('<span class="gmctl">'+
+      '<button class="gmbtn" title="Remove from group" onclick="groupRemoveMember(\''+gEsc(uid)+'\',\''+gEsc(name)+'\')">\u2715</button>'+
     '</span>') : '';
   return '<div class="gmember">'+
     '<span class="gdot '+dotcls+'"></span>'+
@@ -1568,16 +1570,6 @@ async function groupRename(){
     msg.className='status ok'; msg.textContent='Group renamed \u2014 propagating to peers\u2026';
     setTimeout(refreshGroup,700);
   }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
-}
-async function groupRenameMember(uid,cur){
-  const name=prompt('Display name for this head:',cur||'');
-  if(name===null) return;
-  try{
-    const r=await fetch('/api/group/member/rename',{method:'POST',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify({uid:uid,name:name.trim()})});
-    if(!r.ok){ const j=await r.json().catch(()=>({})); alert((j&&j.error)||'Rename failed'); return; }
-    setTimeout(refreshGroup,700);
-  }catch(e){ alert('Network error'); }
 }
 async function groupRemoveMember(uid,name){
   if(!confirm("Remove '"+(name||uid)+"' from the group? It will stop coordinating and can be re-paired later.")) return;

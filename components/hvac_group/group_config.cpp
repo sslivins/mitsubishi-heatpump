@@ -360,25 +360,13 @@ std::string member_display_name(const std::string& uid) {
     return replica_member_name(s_replica, uid);
 }
 
-void note_self_name(const std::string& name, bool seed_only) {
+void note_self_name(const std::string& name) {
     Lock lk;
     if (s_cfg.group_id.empty()) return;
-    if (seed_only && !replica_member_name(s_replica, s_self_uid).empty())
-        return;  // don't overwrite an existing (possibly admin-set) name on boot.
     if (replica_set_name(s_replica, s_self_uid, sanitize_label(name), s_self_uid)) {
         reproject_locked();
         persist_locked(s_cfg);
     }
-}
-
-esp_err_t set_member_name(const std::string& uid, const std::string& name) {
-    Lock lk;
-    if (s_cfg.group_id.empty()) return ESP_ERR_INVALID_STATE;
-    if (replica_set_name(s_replica, uid, sanitize_label(name), s_self_uid)) {
-        reproject_locked();
-        return persist_locked(s_cfg);
-    }
-    return ESP_OK;  // absent / unchanged is not an error
 }
 
 esp_err_t remove_member(const std::string& uid) {
