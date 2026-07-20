@@ -225,6 +225,23 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 .gbtns .btn{margin-top:0;flex:1;display:flex;align-items:center;justify-content:center;gap:6px}
 .btn-accent{background:var(--accent);color:#fff;margin-top:8px}
 .btn-accent:hover{filter:brightness(1.1)}
+/* Reusable modal dialog (replaces native alert/confirm) */
+.dlg-back{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;
+  padding:20px;background:rgba(0,0,0,.55);opacity:0;transition:opacity .15s ease}
+.dlg-back.show{opacity:1}
+.dlg{width:100%;max-width:360px;background:var(--surface);border:1px solid var(--border-strong);
+  border-radius:14px;padding:20px;box-shadow:0 12px 40px rgba(0,0,0,.45);
+  transform:translateY(8px) scale(.98);transition:transform .15s ease}
+.dlg-back.show .dlg{transform:none}
+.dlg-title{font-size:1.02em;font-weight:600;color:var(--fg);margin:0 0 8px}
+.dlg-body{font-size:.9em;color:var(--fg-2);line-height:1.45;margin:0 0 18px}
+.dlg-btns{display:flex;gap:10px}
+.dlg-btns .btn{margin-top:0}
+.dlg-cancel{background:var(--chip);color:var(--fg-2);border:1px solid var(--border-strong)}
+.dlg-cancel:hover{background:var(--hover)}
+.dlg-ok{background:var(--accent);color:#fff}
+.dlg-ok:hover{filter:brightness(1.1)}
+.dlg-ok.danger{background:var(--red)}
 </style>
 </head>
 <body>
@@ -280,7 +297,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 
   <div class="tabs">
     <div class="tab active" data-tab="climate" onclick="showTab('climate')">Climate</div>
-    <div class="tab" data-tab="group" onclick="showTab('group')">Group</div>
+    <div class="tab" data-tab="group" onclick="showTab('group')">Zones</div>
     <div class="tab" data-tab="sensors" onclick="showTab('sensors')">Sensors</div>
     <div class="tab" data-tab="power" onclick="showTab('power')">Power</div>
     <div class="tab" data-tab="network" onclick="showTab('network')">Network</div>
@@ -348,7 +365,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 
   <div class="panel" id="panel-group">
   <div class="card">
-    <h2>Shared Compressor Group</h2>
+    <h2>Zones</h2>
     <p class="hint">Coordinate HEAT / COOL across heads that share one outdoor
       compressor, so opposing demands don't fight.</p>
 
@@ -459,7 +476,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     </div>
 
     <button class="btn" id="wfOtherBtn" onclick="joinOther()" style="margin-top:10px">Other network…</button>
-    <button class="btn btn-danger" onclick="sysPost('/api/system/factory_reset','Erase WiFi credentials and reboot into setup mode?')">Forget WiFi &amp; reset</button>
+    <button class="btn btn-danger" onclick="sysPost('/api/system/factory_reset','Erase WiFi credentials and reboot into setup mode?',true)">Forget WiFi &amp; reset</button>
   </div>
 
   <div class="card" data-grp="network">
@@ -590,6 +607,58 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 
 <script>
 function $(id){return document.getElementById(id)}
+// ── Reusable modal dialog (replaces native alert/confirm) ──────────────
+// uiConfirm(opts) -> Promise<bool>; uiAlert(opts) -> Promise<true>.
+// opts: {title, body, okText, cancelText, danger, showCancel}. Title/body are
+// set via textContent, so caller-supplied names/SSIDs can't inject markup.
+function uiDialog(opts){
+  opts=opts||{};
+  const okText=opts.okText||'OK', cancelText=opts.cancelText||'Cancel';
+  const showCancel=opts.showCancel!==false;
+  return new Promise(resolve=>{
+    const back=document.createElement('div'); back.className='dlg-back';
+    const dlg=document.createElement('div'); dlg.className='dlg';
+    dlg.setAttribute('role','dialog'); dlg.setAttribute('aria-modal','true');
+    if(opts.title){
+      const h=document.createElement('div'); h.className='dlg-title';
+      h.textContent=opts.title; dlg.appendChild(h); dlg.setAttribute('aria-label',opts.title);
+    }
+    if(opts.body){
+      const p=document.createElement('div'); p.className='dlg-body';
+      p.textContent=opts.body; dlg.appendChild(p);
+    }
+    const btns=document.createElement('div'); btns.className='dlg-btns';
+    let cancelBtn=null;
+    if(showCancel){
+      cancelBtn=document.createElement('button');
+      cancelBtn.className='btn dlg-cancel'; cancelBtn.textContent=cancelText;
+      btns.appendChild(cancelBtn);
+    }
+    const okBtn=document.createElement('button');
+    okBtn.className='btn dlg-ok'+(opts.danger?' danger':''); okBtn.textContent=okText;
+    btns.appendChild(okBtn); dlg.appendChild(btns);
+    back.appendChild(dlg); document.body.appendChild(back);
+    let done=false;
+    function close(val){
+      if(done)return; done=true;
+      document.removeEventListener('keydown',onKey,true);
+      back.classList.remove('show');
+      setTimeout(()=>{ if(back.parentNode) back.parentNode.removeChild(back); },160);
+      resolve(val);
+    }
+    function onKey(e){
+      if(e.key==='Escape'){ e.preventDefault(); close(false); }
+      else if(e.key==='Enter'){ e.preventDefault(); close(true); }
+    }
+    okBtn.addEventListener('click',()=>close(true));
+    if(cancelBtn) cancelBtn.addEventListener('click',()=>close(false));
+    back.addEventListener('click',e=>{ if(e.target===back) close(false); });
+    document.addEventListener('keydown',onKey,true);
+    requestAnimationFrame(()=>{ back.classList.add('show'); okBtn.focus(); });
+  });
+}
+function uiConfirm(opts){ return uiDialog(opts); }
+function uiAlert(opts){ return uiDialog(Object.assign({showCancel:false},opts)); }
 let userEditing=false;
 let nameEditing=false;
 let groupEditing=false;
@@ -837,8 +906,8 @@ function initDial(){
 }
 initDial();
 
-async function sysPost(url,msg){
-  if(!confirm(msg))return;
+async function sysPost(url,msg,danger){
+  if(!(await uiConfirm({body:msg,okText:'Continue',danger:!!danger})))return;
   try{await fetch(url,{method:'POST'})}catch(e){}
   $('subtitle').textContent='rebooting…';
 }
@@ -962,7 +1031,7 @@ async function checkUpdate(){
 }
 
 async function installUpdate(){
-  if(!confirm('Download and install the latest firmware? The device will reboot.'))return;
+  if(!(await uiConfirm({title:'Install firmware update?',body:'The device will download the latest firmware and reboot.',okText:'Install'})))return;
   try{
     const r=await fetch('/api/update/install',{method:'POST'});
     if(r.ok){updMsg('Download started…','info');resetBar('updBar');setTimeout(()=>pollProgress(updMsg,'updBar'),800)}
@@ -1010,7 +1079,7 @@ async function saveMqtt(){
   const pw=$('mqPass').value;
   if(pw) body.password=pw;
   if(!body.host){mqMsg('Broker host is required','err');return}
-  if(!confirm('Save MQTT settings and reboot?'))return;
+  if(!(await uiConfirm({title:'Save MQTT settings?',body:'The device will reboot to apply them.',okText:'Save & reboot'})))return;
   $('mqSaveBtn').disabled=true;
   mqMsg('Saving — device will reboot…','info');
   try{
@@ -1148,7 +1217,7 @@ async function saveWifi(){
   // A newly-selected secured network needs a password — the device can only
   // reuse a stored key when reconnecting to the network it's already on.
   if(secured && !pw && ssid!==wfCurSsid){wfMsg('Password required for this network','err');return}
-  if(!confirm('Join "'+ssid+'"? The device will reboot to reconnect.'))return;
+  if(!(await uiConfirm({title:'Join this network?',body:'The device will reboot to reconnect to \u201c'+ssid+'\u201d.',okText:'Join'})))return;
   const body={ssid};
   if(pw) body.password=pw;
   $('wfSaveBtn').disabled=true;
@@ -1378,7 +1447,7 @@ async function saveWebAccess(){
 }
 
 async function removeUserLogin(){
-  if(!confirm('Remove the climate-only access password?'))return;
+  if(!(await uiConfirm({title:'Remove climate-only access?',body:'The climate-only password will be deleted.',okText:'Remove',danger:true})))return;
   secWebMsg('Removing…','info');
   try{
     const r=await fetch('/api/auth',{method:'POST',
@@ -1412,7 +1481,7 @@ function updateApiKeyState(){
 }
 
 async function regenKey(){
-  if(!confirm('Generate a new API key? The current key will stop working.'))return;
+  if(!(await uiConfirm({title:'Generate a new API key?',body:'The current key will stop working immediately.',okText:'Generate',danger:true})))return;
   try{
     const r=await fetch('/api/auth',{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({regenerate_key:true})});
@@ -1570,7 +1639,7 @@ async function groupPairJoin(){
   }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
 }
 async function groupLeave(){
-  if(!confirm('Leave the group? This head will stop coordinating mode with the others.')) return;
+  if(!(await uiConfirm({title:'Leave the group?',body:'This head will stop coordinating mode with the others.',okText:'Leave',danger:true}))) return;
   const msg=$('gPairMsg'); msg.className='status info'; msg.classList.remove('hidden'); msg.textContent='Leaving\u2026';
   try{
     const r=await fetch('/api/group/leave',{method:'POST'});
@@ -1594,13 +1663,13 @@ async function groupRename(){
   }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
 }
 async function groupRemoveMember(uid,name){
-  if(!confirm("Remove '"+(name||uid)+"' from the group? It will stop coordinating and can be re-paired later.")) return;
+  if(!(await uiConfirm({title:'Remove '+(name||uid)+'?',body:'It will stop coordinating and can be re-paired later.',okText:'Remove',danger:true}))) return;
   try{
     const r=await fetch('/api/group/member/remove',{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({uid:uid})});
-    if(!r.ok){ const j=await r.json().catch(()=>({})); alert((j&&j.error)||'Remove failed'); return; }
+    if(!r.ok){ const j=await r.json().catch(()=>({})); await uiAlert({title:'Remove failed',body:(j&&j.error)||'Could not remove that member.'}); return; }
     setTimeout(refreshGroup,700);
-  }catch(e){ alert('Network error'); }
+  }catch(e){ await uiAlert({title:'Network error',body:'Could not reach the device.'}); }
 }
 function groupNameEdit(){
   groupEditing=true;
