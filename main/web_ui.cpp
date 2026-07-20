@@ -632,6 +632,9 @@ esp_err_t handle_device_post(httpd_req_t* req) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS write failed");
         return ESP_FAIL;
     }
+    // Propagate this head's (canonical) display name into the group replica so
+    // peers learn it via gossip. No-op when standalone or unchanged.
+    hvac_group::note_self_name(wifi::device_display_name());
     // Echo the canonical (sanitised) value so the UI can update in place.
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "name", wifi::device_display_name().c_str());
@@ -691,8 +694,12 @@ esp_err_t handle_group_state(httpd_req_t* req) {
     std::string nonce  = get_header(req, "X-Group-Nonce");
     std::string sig    = get_header(req, "X-Group-Sig");
 
+    // Authenticate by shared-secret possession (HMAC below), NOT by current
+    // membership: a head an admin just removed elsewhere must still be able to
+    // poll us once so it learns its own tombstone via the replica and leaves.
+    // Gating on is_peer() here would strand the evicted head in the group.
     if (!hvac_group::is_valid_uid(sender) || !hvac_group::is_valid_nonce(nonce) ||
-        gid != g.group_id || !hvac_group::is_peer(sender)) {
+        gid != g.group_id) {
         httpd_resp_set_status(req, "401 Unauthorized");
         httpd_resp_sendstr(req, "{\"error\":\"unauthorized\"}");
         return ESP_FAIL;
@@ -716,6 +723,13 @@ esp_err_t handle_group_state(httpd_req_t* req) {
     cJSON_AddStringToObject(root, "subMode", sta.subMode.c_str());
     cJSON_AddStringToObject(root, "stage", sta.stage.c_str());
     cJSON_AddNumberToObject(root, "pv", hvac_group::kProtocolVersion);
+    // Ride the replicated group state (label + names + membership CRDT) on the
+    // snapshot so the poller can anti-entropy-merge it (Phase 6 gossip).
+    std::string rep = hvac_group::replica_json();
+    if (!rep.empty()) {
+        cJSON* rj = cJSON_Parse(rep.c_str());
+        if (rj) cJSON_AddItemToObject(root, "replica", rj);
+    }
     char* body = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (!body) {
@@ -750,7 +764,9 @@ esp_err_t poll_evt(esp_http_client_event_t* evt) {
         strcasecmp(evt->header_key, "X-Group-Sig") == 0) {
         c->sig = evt->header_value ? evt->header_value : "";
     } else if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data && evt->data_len > 0) {
-        if (c->body.size() < 1024)
+        // Body carries the peer snapshot + replicated group-state CRDT, so allow
+        // headroom beyond the tiny status fields for the membership/name payload.
+        if (c->body.size() < 4096)
             c->body.append(static_cast<const char*>(evt->data), evt->data_len);
     }
     return ESP_OK;
@@ -822,6 +838,14 @@ bool poll_peer(const std::string& uid, hvac_group::MemberObs& out, bool& incompa
                         incompatible = true;
                         out.state = hvac_group::MemberState::Incompatible;
                     }
+                    // Anti-entropy: merge the peer's replicated group state (label
+                    // + names + membership) into ours. cJSON_PrintUnformatted the
+                    // sub-object back to a string for the device-side merge.
+                    const cJSON* jrep = cJSON_GetObjectItem(j, "replica");
+                    if (jrep) {
+                        char* rs = cJSON_PrintUnformatted(jrep);
+                        if (rs) { hvac_group::merge_remote_json(rs); cJSON_free(rs); }
+                    }
                     ok = true;
                 }
                 cJSON_Delete(j);
@@ -837,6 +861,10 @@ void update_status_led();  // defined below; drives the onboard warning glyph
 void update_group_mqtt();  // defined below; mirrors group status to Home Assistant
 
 void group_poll_task(void*) {
+    // Seed our own display name into the replica once at boot so peers learn it
+    // even if it was set before this firmware gained name propagation.
+    if (hvac_group::in_group())
+        hvac_group::note_self_name(wifi::device_display_name(), /*seed_only=*/true);
     for (;;) {
         if (hvac_group::in_group()) {
             hvac_group::GroupConfig g = hvac_group::get();
@@ -877,9 +905,12 @@ hvac_group::MemberObs cached_peer_obs(const std::string& uid) {
         (esp_timer_get_time() - it->second.updated_us) < kPeerFreshUs) {
         m = it->second.obs;
         m.uid = uid;
-        if (m.name.empty()) m.name = uid;
     }
     xSemaphoreGive(s_peer_mtx);
+    // Prefer the replicated display name (converges across heads); fall back to
+    // the raw uid when no friendly name has propagated yet.
+    std::string nm = hvac_group::member_display_name(uid);
+    m.name = nm.empty() ? uid : nm;
     return m;
 }
 
@@ -893,7 +924,12 @@ hvac_group::GroupView compute_group_view(std::vector<hvac_group::MemberObs>* out
 
     hvac_group::MemberObs self_obs;
     self_obs.uid        = hvac_group::self_uid();
-    self_obs.name       = wifi::device_display_name();
+    // Prefer the replicated (converged) display name so self is consistent with
+    // how peers render this head; fall back to the local device name.
+    {
+        std::string rep = hvac_group::member_display_name(self_obs.uid);
+        self_obs.name   = rep.empty() ? wifi::device_display_name() : rep;
+    }
     self_obs.state      = hvac_group::MemberState::SelfKnown;
     self_obs.demand     = hvac_group::classify_demand(st.power, st.mode);
     self_obs.power_on   = (self_obs.demand != hvac_group::Demand::Neutral) ||
@@ -1326,6 +1362,12 @@ esp_err_t handle_group_pair_claim(httpd_req_t* req) {
     for (const auto& uid : oc.members)
         cJSON_AddItemToArray(members, cJSON_CreateString(uid.c_str()));
     cJSON_AddItemToObject(root, "members", members);
+    // Include the owner's replicated CRDT state so the joiner adopts exact
+    // versions/names/tombstones (immediate membership + label consistency).
+    if (!oc.replica_json.empty()) {
+        cJSON* rj = cJSON_Parse(oc.replica_json.c_str());
+        if (rj) cJSON_AddItemToObject(root, "replica", rj);
+    }
     char* str = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, str);
@@ -1396,7 +1438,7 @@ esp_err_t handle_group_pair_join(httpd_req_t* req) {
     // Read the response body (bounded).
     std::string resp;
     char rbuf[256];
-    int cap = (clen > 0 && clen < 2048) ? clen : 2048;
+    int cap = (clen > 0 && clen < 4096) ? clen : 4096;  // headroom for the replica CRDT
     while ((int)resp.size() < cap) {
         int r = esp_http_client_read(cli, rbuf, sizeof(rbuf));
         if (r <= 0) break;
@@ -1429,12 +1471,21 @@ esp_err_t handle_group_pair_join(httpd_req_t* req) {
     std::string group_id = (gid && cJSON_IsString(gid)) ? gid->valuestring : "";
     std::string label    = (glabel && cJSON_IsString(glabel)) ? glabel->valuestring : "";
     std::string secret   = (gsec && cJSON_IsString(gsec)) ? gsec->valuestring : "";
+    // Adopt the owner's exact replicated state when supplied (immediate
+    // membership/label consistency); otherwise join_group synthesizes one.
+    std::string replica_json;
+    if (const cJSON* jrep = cJSON_GetObjectItem(rj, "replica")) {
+        char* rs = cJSON_PrintUnformatted(jrep);
+        if (rs) { replica_json = rs; cJSON_free(rs); }
+    }
     cJSON_Delete(rj);
 
-    if (hvac_group::join_group(group_id, label, secret, members) != ESP_OK) {
+    if (hvac_group::join_group(group_id, label, secret, members, replica_json) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "could not adopt group");
         return ESP_FAIL;
     }
+    // Seed our own display name into the freshly-adopted replica so it propagates.
+    hvac_group::note_self_name(wifi::device_display_name(), /*seed_only=*/true);
 
     hvac_group::GroupConfig g = hvac_group::get();
     cJSON* root = cJSON_CreateObject();
@@ -1655,6 +1706,79 @@ esp_err_t handle_group_label(httpd_req_t* req) {
     cJSON_Delete(json);
 
     esp_err_t err = hvac_group::set_label(label);
+    if (err == ESP_ERR_INVALID_STATE)
+        return send_json_error(req, "409 Conflict", "not in a group");
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS write failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+}
+
+// ── POST /api/group/member/remove ─ evict a member (admin) ─────────────
+// Body: {"uid":"<peer>"}. Removes the peer from the replicated membership
+// (OR-Set tombstone); the change gossips to every head, and the evicted head
+// drops the group on its next poll. Removing self is rejected (use /leave).
+esp_err_t handle_group_member_remove(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    char* body = recv_body(req);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
+        return ESP_FAIL;
+    }
+    cJSON* json = cJSON_Parse(body);
+    free(body);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    const cJSON* ju = cJSON_GetObjectItem(json, "uid");
+    std::string uid = (ju && cJSON_IsString(ju)) ? ju->valuestring : "";
+    cJSON_Delete(json);
+    if (!hvac_group::is_valid_uid(uid))
+        return send_json_error(req, "400 Bad Request", "invalid uid");
+
+    esp_err_t err = hvac_group::remove_member(uid);
+    if (err == ESP_ERR_INVALID_STATE)
+        return send_json_error(req, "409 Conflict", "not in a group");
+    if (err == ESP_ERR_INVALID_ARG)
+        return send_json_error(req, "400 Bad Request", "cannot remove self; use leave");
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS write failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+}
+
+// ── POST /api/group/member/rename ─ rename any member (admin) ──────────
+// Body: {"uid":"<member>","name":"<display>"}. Sets the member's replicated
+// (LWW) display name, which converges across all heads.
+esp_err_t handle_group_member_rename(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    char* body = recv_body(req);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
+        return ESP_FAIL;
+    }
+    cJSON* json = cJSON_Parse(body);
+    free(body);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    const cJSON* ju = cJSON_GetObjectItem(json, "uid");
+    const cJSON* jn = cJSON_GetObjectItem(json, "name");
+    std::string uid  = (ju && cJSON_IsString(ju)) ? ju->valuestring : "";
+    std::string name = (jn && cJSON_IsString(jn)) ? jn->valuestring : "";
+    cJSON_Delete(json);
+    if (!hvac_group::is_valid_uid(uid))
+        return send_json_error(req, "400 Bad Request", "invalid uid");
+
+    esp_err_t err = hvac_group::set_member_name(uid, name);
     if (err == ESP_ERR_INVALID_STATE)
         return send_json_error(req, "409 Conflict", "not in a group");
     if (err != ESP_OK) {
@@ -1941,7 +2065,7 @@ esp_err_t init(const Hooks& hooks) {
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn = httpd_uri_match_wildcard;
-    cfg.max_uri_handlers = 36;
+    cfg.max_uri_handlers = 40;
     cfg.stack_size = 8192;
     // The default 7 sockets reserve 3 for internal use, leaving only 4 for
     // clients — fewer than the 6 keep-alive connections a single browser tab
@@ -1987,6 +2111,8 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/group/sync",          HTTP_POST,     handle_group_sync,        nullptr},
         {"/api/group/resolve",       HTTP_POST,     handle_group_resolve,     nullptr},
         {"/api/group/label",         HTTP_POST,     handle_group_label,       nullptr},
+        {"/api/group/member/remove", HTTP_POST,     handle_group_member_remove, nullptr},
+        {"/api/group/member/rename", HTTP_POST,     handle_group_member_rename, nullptr},
         {"/api/wifi",                HTTP_GET,      handle_wifi_get,       nullptr},
         {"/api/scan",                HTTP_GET,      handle_scan,           nullptr},
         {"/api/wifi",                HTTP_POST,     handle_wifi_post,      nullptr},

@@ -44,11 +44,47 @@ bool in_group();
 /// contains an invalid uid or this device's own uid.
 esp_err_t save(const GroupConfig& cfg);
 
-/// Update only the display label (must already be in a group).
+/// Update only the display label (must already be in a group). Routed through
+/// the replicated LWW register so the new label propagates to every peer.
 esp_err_t set_label(const std::string& label);
 
 /// Leave the group: clears group_id/secret/label/peers and persists. Idempotent.
 esp_err_t leave_group();
+
+// ── Replicated group state (Phase 6: eventual consistency via gossip) ──────
+// The label, per-head display names, and membership are a small set of CRDTs
+// (group_proto.h) reconciled over the signed peer-poll. These accessors bridge
+// that pure core to NVS (JSON blob) and to the gossip transport in web_ui.
+
+/// Serialize this head's replicated group state (label + member names +
+/// membership + tombstones) to a compact JSON string for the signed snapshot.
+/// Returns "" when standalone.
+std::string replica_json();
+
+/// Merge a peer's replicated-state JSON (from its polled snapshot) into ours.
+/// Reprojects peers/label and persists on any change. If the merge reveals this
+/// head has been evicted (self removed by an admin elsewhere), it leaves the
+/// group. Returns true if our state changed.
+bool merge_remote_json(const std::string& json);
+
+/// Display name currently recorded for @p uid in the replica ("" if none).
+std::string member_display_name(const std::string& uid);
+
+/// Record this head's own current display name into the replica so peers learn
+/// it. No-op if unchanged or standalone. Call with @p seed_only true at boot/
+/// join so a mere restart never clobbers a name a human set elsewhere (e.g. an
+/// admin rename); call with the default (false) on an explicit device rename so
+/// that write wins. LWW: last human write across any entry point wins.
+void note_self_name(const std::string& name, bool seed_only = false);
+
+/// Admin: rename any member (self or a peer). Propagates via gossip. No-op if
+/// @p uid isn't a present member or the name is unchanged.
+esp_err_t set_member_name(const std::string& uid, const std::string& name);
+
+/// Admin: remove a member from the group (OR-Set remove → tombstone). The
+/// evicted head learns of it on its next poll and drops the group. Rejects an
+/// attempt to remove this head itself (use leave_group()).
+esp_err_t remove_member(const std::string& uid);
 
 // ── Crypto primitives (hardware RNG + mbedTLS) ─────────────────────────────
 
@@ -127,6 +163,7 @@ struct ClaimOutcome {
     std::string group_label;
     std::string group_secret;
     std::vector<std::string> members;  ///< owner uid + existing peers (not joiner)
+    std::string replica_json;          ///< owner's replicated state for the joiner to adopt
 };
 
 /// Owner side: validate an inbound pairing claim from @p joiner_uid. On success
@@ -137,9 +174,14 @@ ClaimOutcome pairing_claim(const std::string& code, const std::string& joiner_ui
 
 /// Joiner side: adopt a group from a successful claim response. Validates all
 /// fields, stores group_id/label/secret, and sets the peer list to @p members
-/// minus this device's own uid. Returns ESP_ERR_INVALID_ARG on malformed input.
+/// minus this device's own uid. When @p replica_json is non-empty and parses,
+/// the joiner adopts the owner's exact replicated state (versions, names,
+/// tombstones) so membership/labels are immediately consistent; otherwise it
+/// synthesizes a fresh replica from @p members and @p label. Returns
+/// ESP_ERR_INVALID_ARG on malformed input.
 esp_err_t join_group(const std::string& group_id, const std::string& label,
                      const std::string& secret,
-                     const std::vector<std::string>& members);
+                     const std::vector<std::string>& members,
+                     const std::string& replica_json = "");
 
 }  // namespace hvac_group

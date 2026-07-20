@@ -4,6 +4,8 @@
 
 #include "group_proto.h"
 
+#include <algorithm>
+
 namespace hvac_group {
 
 namespace {
@@ -362,6 +364,178 @@ ResolveOp plan_resolution(bool power_on, Demand member_demand,
         op.set_mode = target;
     }
     return op;
+}
+
+// ── Replicated group state (Phase 6 CRDTs) ──────────────────────────────────
+
+namespace {
+/// Index of @p uid in @p members, or -1.
+int member_index(const std::vector<ReplicaMember>& members, const std::string& uid) {
+    for (size_t i = 0; i < members.size(); ++i) {
+        if (members[i].uid == uid) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+/// Advance @p r.lamport past every version it currently carries, so the next
+/// local write is guaranteed to supersede everything observed so far.
+void bump_clock_to_cover(GroupReplica& r) {
+    uint64_t hi = r.lamport;
+    if (r.label.version > hi) hi = r.label.version;
+    for (const auto& m : r.members) {
+        if (m.name.version > hi) hi = m.name.version;
+        if (m.add_version > hi)  hi = m.add_version;
+    }
+    for (const auto& t : r.tombstones) {
+        if (t.second > hi) hi = t.second;
+    }
+    r.lamport = hi;
+}
+
+/// Record uid→ver as a tombstone, keeping the max version. Returns true if the
+/// stored version increased (i.e. this is new information).
+bool set_tombstone(GroupReplica& r, const std::string& uid, uint64_t ver) {
+    for (auto& t : r.tombstones) {
+        if (t.first == uid) {
+            if (ver > t.second) { t.second = ver; return true; }
+            return false;
+        }
+    }
+    r.tombstones.emplace_back(uid, ver);
+    return true;
+}
+}  // namespace
+
+bool lww_wins(uint64_t va, const std::string& oa,
+              uint64_t vb, const std::string& ob) {
+    if (va != vb) return va > vb;
+    return oa > ob;  // total, replica-independent tiebreak.
+}
+
+uint64_t replica_tombstone_version(const GroupReplica& r, const std::string& uid) {
+    for (const auto& t : r.tombstones) {
+        if (t.first == uid) return t.second;
+    }
+    return 0;
+}
+
+bool merge_replica(GroupReplica& local, const GroupReplica& remote) {
+    bool changed = false;
+
+    // 1. Label — LWW.
+    if (lww_wins(remote.label.version, remote.label.origin,
+                 local.label.version, local.label.origin)) {
+        local.label = remote.label;
+        changed = true;
+    }
+
+    // 2. Tombstones — union, keeping the max version. Do this before members so
+    //    an incoming removal can immediately veto an incoming (older) add.
+    for (const auto& t : remote.tombstones) {
+        if (set_tombstone(local, t.first, t.second)) changed = true;
+    }
+
+    // 3. Members — OR-Set merge. An add is live only if its add_version is
+    //    strictly newer than any tombstone for that uid (remove-wins, but a
+    //    later re-add resurrects).
+    for (const auto& rm : remote.members) {
+        if (rm.add_version <= replica_tombstone_version(local, rm.uid)) continue;
+        int idx = member_index(local.members, rm.uid);
+        if (idx < 0) {
+            if (local.members.size() >= kMaxReplicaMembers) continue;  // cap untrusted growth.
+            local.members.push_back(rm);
+            changed = true;
+        } else {
+            ReplicaMember& lm = local.members[static_cast<size_t>(idx)];
+            if (rm.add_version > lm.add_version) { lm.add_version = rm.add_version; changed = true; }
+            if (lww_wins(rm.name.version, rm.name.origin,
+                         lm.name.version, lm.name.origin)) {
+                lm.name = rm.name; changed = true;
+            }
+        }
+    }
+
+    // 4. Drop any present local member now superseded by a tombstone (possibly
+    //    one we only just learned in step 2).
+    for (size_t i = 0; i < local.members.size();) {
+        if (local.members[i].add_version <=
+            replica_tombstone_version(local, local.members[i].uid)) {
+            local.members.erase(local.members.begin() + static_cast<long>(i));
+            changed = true;
+        } else {
+            ++i;
+        }
+    }
+
+    // 5. Bound tombstones (defensive against untrusted growth): keep the newest.
+    if (local.tombstones.size() > kMaxReplicaTombstones) {
+        std::sort(local.tombstones.begin(), local.tombstones.end(),
+                  [](const std::pair<std::string, uint64_t>& a,
+                     const std::pair<std::string, uint64_t>& b) { return a.second > b.second; });
+        local.tombstones.resize(kMaxReplicaTombstones);
+    }
+
+    // 6. Keep the clock monotone and ahead of everything seen (not itself a
+    //    user-visible "change").
+    if (remote.lamport > local.lamport) local.lamport = remote.lamport;
+    bump_clock_to_cover(local);
+    return changed;
+}
+
+bool replica_set_label(GroupReplica& r, const std::string& label,
+                       const std::string& writer_uid) {
+    bump_clock_to_cover(r);
+    r.label.value   = label;
+    r.label.version = ++r.lamport;
+    r.label.origin  = writer_uid;
+    return true;
+}
+
+bool replica_set_name(GroupReplica& r, const std::string& uid,
+                      const std::string& name, const std::string& writer_uid) {
+    int idx = member_index(r.members, uid);
+    if (idx < 0) return false;
+    ReplicaMember& m = r.members[static_cast<size_t>(idx)];
+    if (m.name.value == name) return false;  // no churn on an unchanged name.
+    bump_clock_to_cover(r);
+    m.name.value   = name;
+    m.name.version = ++r.lamport;
+    m.name.origin  = writer_uid;
+    return true;
+}
+
+bool replica_add_member(GroupReplica& r, const std::string& uid) {
+    if (member_index(r.members, uid) >= 0) return false;
+    bump_clock_to_cover(r);
+    ReplicaMember m;
+    m.uid         = uid;
+    m.add_version = ++r.lamport;  // strictly newer than any prior tombstone → resurrects.
+    r.members.push_back(m);
+    return true;
+}
+
+bool replica_remove_member(GroupReplica& r, const std::string& uid) {
+    int idx = member_index(r.members, uid);
+    if (idx < 0) return false;
+    r.members.erase(r.members.begin() + idx);
+    bump_clock_to_cover(r);
+    set_tombstone(r, uid, ++r.lamport);
+    return true;
+}
+
+std::vector<std::string> replica_peer_uids(const GroupReplica& r,
+                                           const std::string& self_uid) {
+    std::vector<std::string> out;
+    for (const auto& m : r.members) {
+        if (m.uid != self_uid) out.push_back(m.uid);
+    }
+    return out;
+}
+
+std::string replica_member_name(const GroupReplica& r, const std::string& uid) {
+    int idx = member_index(r.members, uid);
+    if (idx < 0) return "";
+    return r.members[static_cast<size_t>(idx)].name.value;
 }
 
 }  // namespace hvac_group

@@ -208,6 +208,9 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 .gname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.92em}
 .gmode{font-size:.8em;color:var(--fg-3)}
 .glock{font-size:.66em;color:var(--orange);white-space:nowrap}
+.gmctl{display:flex;gap:4px;flex:0 0 auto}
+.gmbtn{background:none;border:1px solid var(--border);color:var(--fg-3);border-radius:6px;cursor:pointer;font-size:.8em;line-height:1;padding:3px 6px}
+.gmbtn:hover{color:var(--fg);border-color:var(--fg-3)}
 .gbtns{display:flex;gap:8px}
 .gbtns .btn{margin-top:0;flex:1;display:flex;align-items:center;justify-content:center;gap:6px}
 .btn-accent{background:var(--accent);color:#fff;margin-top:8px}
@@ -378,7 +381,13 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 
       <details class="adv">
         <summary>Group settings</summary>
-        <button class="btn btn-danger" onclick="groupLeave()">Leave group</button>
+        <label class="mqf" style="justify-content:flex-start;gap:8px;margin-bottom:8px">
+          <span style="font-size:.8em;color:var(--fg-3);flex:0 0 auto">Group name</span>
+          <input id="gRenameInput" type="text" maxlength="32" placeholder="e.g. Upstairs"
+                 autocomplete="off" style="flex:1 1 auto"></label>
+        <button class="btn" onclick="groupRename()">Rename group</button>
+        <div id="gRenameMsg" class="status hidden" style="margin:8px 0"></div>
+        <button class="btn btn-danger" style="margin-top:10px" onclick="groupLeave()">Leave group</button>
       </details>
     </div>
 
@@ -1417,12 +1426,17 @@ function groupStatusText(s){
   return ({ok:'In sync',standalone:'Standalone',pending_conflict:'Conflict (pending)',
     conflict:'Conflict',indeterminate:'Unconfirmed'})[s]||s||'—';
 }
-function memberRow(name,demand,dotcls,tag,isLock){
+function memberRow(name,demand,dotcls,tag,isLock,uid,isPeer){
+  const ctrls = uid ? ('<span class="gmctl">'+
+      '<button class="gmbtn" title="Rename" onclick="groupRenameMember(\''+gEsc(uid)+'\',\''+gEsc(name)+'\')">\u270E</button>'+
+      (isPeer?'<button class="gmbtn" title="Remove from group" onclick="groupRemoveMember(\''+gEsc(uid)+'\',\''+gEsc(name)+'\')">\u2715</button>':'')+
+    '</span>') : '';
   return '<div class="gmember">'+
     '<span class="gdot '+dotcls+'"></span>'+
     '<span class="gname">'+gEsc(name)+(tag?' <span class="gmode">('+gEsc(tag)+')</span>':'')+'</span>'+
     (isLock?'<span class="glock">holds unit</span>':'')+
     '<span class="gmode">'+gEsc(demand||'—')+'</span>'+
+    ctrls+
   '</div>';
 }
 function renderGroupBanner(g){
@@ -1466,15 +1480,16 @@ function renderGroupPanel(g){
   const inConflict=(g.status==='conflict'||g.status==='pending_conflict');
   const lockMatch=(nm,uid)=>inConflict&&g.locked_by&&(g.locked_by===nm||g.locked_by===uid);
   const rows=[ memberRow(self.name||self.uid,self.configured_demand,'selfdot','you',
-      lockMatch(self.name,self.uid)) ];
+      lockMatch(self.name,self.uid),self.uid,false) ];
   (g.members||[]).forEach(m=>{
     const known=(m.state==='known');
     rows.push(memberRow(m.name||m.uid, known?m.configured_demand:null,
       known?'known':'unknown', known?'':(m.state||'unknown'),
-      lockMatch(m.name,m.uid)));
+      lockMatch(m.name,m.uid),m.uid,true));
   });
   $('gMembers').innerHTML=rows.join('');
   $('gResolve').classList.toggle('hidden',(g.member_count||1)<=1);
+  const ri=$('gRenameInput'); if(ri&&document.activeElement!==ri) ri.value=g.group_label||'';
 }
 async function refreshGroup(){
   if(authState.role!=='admin') return;
@@ -1541,8 +1556,38 @@ async function groupLeave(){
     setTimeout(refreshGroup,700);
   }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
 }
-
-async function pollOnce(){
+async function groupRename(){
+  const label=($('gRenameInput').value||'').trim();
+  const msg=$('gRenameMsg'); msg.className='status info'; msg.classList.remove('hidden');
+  msg.textContent='Renaming\u2026';
+  try{
+    const r=await fetch('/api/group/label',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({label:label})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ msg.className='status err'; msg.textContent=(j&&j.error)||'Rename failed'; return; }
+    msg.className='status ok'; msg.textContent='Group renamed \u2014 propagating to peers\u2026';
+    setTimeout(refreshGroup,700);
+  }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
+}
+async function groupRenameMember(uid,cur){
+  const name=prompt('Display name for this head:',cur||'');
+  if(name===null) return;
+  try{
+    const r=await fetch('/api/group/member/rename',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({uid:uid,name:name.trim()})});
+    if(!r.ok){ const j=await r.json().catch(()=>({})); alert((j&&j.error)||'Rename failed'); return; }
+    setTimeout(refreshGroup,700);
+  }catch(e){ alert('Network error'); }
+}
+async function groupRemoveMember(uid,name){
+  if(!confirm("Remove '"+(name||uid)+"' from the group? It will stop coordinating and can be re-paired later.")) return;
+  try{
+    const r=await fetch('/api/group/member/remove',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({uid:uid})});
+    if(!r.ok){ const j=await r.json().catch(()=>({})); alert((j&&j.error)||'Remove failed'); return; }
+    setTimeout(refreshGroup,700);
+  }catch(e){ alert('Network error'); }
+}
   await refresh();
   if(authState.role!=='admin'){ tickN++; return; }  // user role: climate only
   if(tickN%3===0) await loadWifi();

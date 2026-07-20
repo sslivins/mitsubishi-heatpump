@@ -364,6 +364,125 @@ static void test_plan_resolution() {
     CHECK_FALSE(h.change);
 }
 
+// ── Replicated-state CRDT tests ─────────────────────────────────────────────
+
+// Build a replica from scratch via the local-mutation API, as a device would.
+static GroupReplica seeded_replica() {
+    GroupReplica r;
+    replica_add_member(r, "aaaa");
+    replica_add_member(r, "bbbb");
+    replica_set_label(r, "Upstairs", "aaaa");
+    return r;
+}
+
+static void test_lww_ordering() {
+    CHECK_TRUE(lww_wins(2, "a", 1, "z"));    // higher version wins regardless of origin
+    CHECK_FALSE(lww_wins(1, "z", 2, "a"));
+    CHECK_TRUE(lww_wins(3, "b", 3, "a"));    // equal version → greater origin wins
+    CHECK_FALSE(lww_wins(3, "a", 3, "b"));
+    CHECK_FALSE(lww_wins(3, "a", 3, "a"));   // identical write does not "win" (not strict)
+}
+
+static void test_replica_local_mutations() {
+    GroupReplica r = seeded_replica();
+    CHECK_EQ(replica_member_name(r, "aaaa"), "");
+    CHECK_TRUE(replica_set_name(r, "aaaa", "Kitchen", "aaaa"));
+    CHECK_EQ(replica_member_name(r, "aaaa"), "Kitchen");
+    // Re-setting the same value is a no-op (no clock churn / re-propagation).
+    uint64_t before = r.lamport;
+    CHECK_FALSE(replica_set_name(r, "aaaa", "Kitchen", "aaaa"));
+    CHECK_TRUE(r.lamport == before);
+    // Naming an absent member fails.
+    CHECK_FALSE(replica_set_name(r, "zzzz", "Ghost", "aaaa"));
+    // Adding an existing member is a no-op.
+    CHECK_FALSE(replica_add_member(r, "aaaa"));
+    // peers-minus-self projection.
+    auto peers = replica_peer_uids(r, "aaaa");
+    CHECK_TRUE(peers.size() == 1 && peers[0] == "bbbb");
+}
+
+static void test_replica_remove_and_readd() {
+    GroupReplica r = seeded_replica();
+    CHECK_TRUE(replica_remove_member(r, "bbbb"));
+    CHECK_TRUE(replica_peer_uids(r, "aaaa").empty());
+    CHECK_TRUE(replica_tombstone_version(r, "bbbb") > 0);
+    // Removing again fails (already gone).
+    CHECK_FALSE(replica_remove_member(r, "bbbb"));
+    // A fresh add resurrects it (add_version > tombstone since the clock is monotone).
+    CHECK_TRUE(replica_add_member(r, "bbbb"));
+    auto peers = replica_peer_uids(r, "aaaa");
+    CHECK_TRUE(peers.size() == 1 && peers[0] == "bbbb");
+}
+
+// Merge is symmetric: A⊕B and B⊕A converge to the same state.
+static bool replicas_equal(const GroupReplica& a, const GroupReplica& b) {
+    if (a.label.value != b.label.value) return false;
+    if (a.members.size() != b.members.size()) return false;
+    for (const auto& m : a.members) {
+        if (replica_member_name(b, m.uid) != m.name.value) return false;
+        bool found = false;
+        for (const auto& bm : b.members) if (bm.uid == m.uid) { found = true; break; }
+        if (!found) return false;
+    }
+    return true;
+}
+
+static void test_merge_label_lww() {
+    // Two heads concurrently rename the group; the higher Lamport version wins.
+    GroupReplica a = seeded_replica();            // label "Upstairs" @ v3 origin aaaa
+    GroupReplica b = a;                            // same starting point
+    replica_set_label(a, "Loft", "aaaa");          // a advances its own clock
+    replica_set_label(b, "Attic", "bbbb");         // b advances its own clock
+    // Merge both directions; both converge to the same winner.
+    GroupReplica ab = a; merge_replica(ab, b);
+    GroupReplica ba = b; merge_replica(ba, a);
+    CHECK_EQ(ab.label.value, ba.label.value);
+    // Idempotent: merging the same remote a second time reports no delta.
+    CHECK_FALSE(merge_replica(ab, b));
+}
+
+static void test_merge_convergence_names() {
+    // A names aaaa, B names bbbb; after gossip both know both names.
+    GroupReplica a = seeded_replica();
+    GroupReplica b = a;
+    replica_set_name(a, "aaaa", "Kitchen", "aaaa");
+    replica_set_name(b, "bbbb", "Den", "bbbb");
+    GroupReplica ab = a; merge_replica(ab, b);
+    GroupReplica ba = b; merge_replica(ba, a);
+    CHECK_EQ(replica_member_name(ab, "aaaa"), "Kitchen");
+    CHECK_EQ(replica_member_name(ab, "bbbb"), "Den");
+    CHECK_TRUE(replicas_equal(ab, ba));
+}
+
+static void test_merge_remove_wins() {
+    // A removes bbbb while B (not yet knowing) renames bbbb. After anti-entropy,
+    // the removal dominates on both replicas (remove-wins OR-Set).
+    GroupReplica a = seeded_replica();
+    GroupReplica b = a;
+    replica_remove_member(a, "bbbb");             // tombstone at a's clock
+    replica_set_name(b, "bbbb", "Den", "bbbb");    // concurrent rename, older add tag
+    GroupReplica ab = a; merge_replica(ab, b);
+    GroupReplica ba = b; merge_replica(ba, a);
+    CHECK_TRUE(replica_peer_uids(ab, "aaaa").empty());
+    CHECK_TRUE(replica_peer_uids(ba, "aaaa").empty());
+    CHECK_TRUE(replicas_equal(ab, ba));
+}
+
+static void test_merge_idempotent_and_no_delta() {
+    GroupReplica a = seeded_replica();
+    replica_set_name(a, "aaaa", "Kitchen", "aaaa");
+    GroupReplica b = a;                            // identical
+    // Merging an identical peer yields no change.
+    CHECK_FALSE(merge_replica(a, b));
+    // Merging twice is the same as merging once.
+    GroupReplica c = seeded_replica();
+    replica_set_label(c, "Cabin", "bbbb");
+    GroupReplica m = a; merge_replica(m, c);
+    GroupReplica once = m;
+    CHECK_FALSE(merge_replica(m, c));              // second merge is a no-op
+    CHECK_TRUE(replicas_equal(m, once));
+}
+
 int main() {
     test_hex_roundtrip();
     test_identity_validation();
@@ -384,6 +503,13 @@ int main() {
     test_group_indeterminate_unknown();
     test_group_self_blocked_peer_unknown();
     test_group_auto_blind_spot();
+    test_lww_ordering();
+    test_replica_local_mutations();
+    test_replica_remove_and_readd();
+    test_merge_label_lww();
+    test_merge_convergence_names();
+    test_merge_remove_wins();
+    test_merge_idempotent_and_no_delta();
     if (g_failures == 0) {
         std::printf("OK - all host group-protocol tests passed\n");
         return 0;
