@@ -1575,8 +1575,12 @@ function renderGroupPanel(g){
       lockMatch(self.name,self.uid),self.uid,false) ];
   (g.members||[]).forEach(m=>{
     const known=(m.state==='known');
+    // An unreachable peer (no fresh signed poll within ~45s) comes back as
+    // state!=='known' — surface that plainly as "offline" so it's obvious a
+    // zone dropped off, rather than the ambiguous "unknown".
+    const tag=known?'':(m.state==='incompatible'?'incompatible':'offline');
     rows.push(memberRow(m.name||m.uid, known?m.configured_demand:null,
-      known?'known':'unknown', known?'':(m.state||'unknown'),
+      known?'known':'unknown', tag,
       lockMatch(m.name,m.uid),m.uid,true));
   });
   $('gMembers').innerHTML=rows.join('');
@@ -1666,7 +1670,7 @@ async function groupRename(){
       headers:{'Content-Type':'application/json'},body:JSON.stringify({label:label})});
     const j=await r.json().catch(()=>({}));
     if(!r.ok){ msg.className='status err'; msg.textContent=(j&&j.error)||'Rename failed'; return; }
-    msg.className='status ok'; msg.textContent='Group renamed \u2014 propagating to peers\u2026';
+    msg.classList.add('hidden');
     groupEditing=false; $('gRenameRow').classList.add('hidden');
     setTimeout(refreshGroup,700);
   }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
