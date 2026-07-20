@@ -349,6 +349,82 @@ esp_err_t publish_diag_state(const DiagState& d) {
     return id < 0 ? ESP_FAIL : ESP_OK;
 }
 
+// Helper: emit one HA discovery config (retained) for a group entity. `component`
+// is "binary_sensor" or "sensor". Mirrors publish_diag_sensor but points at the
+// .../group/state topic and does not tag the entities as diagnostic (group state
+// is operational, not a health metric).
+static esp_err_t publish_group_entity(const char* component, const char* name,
+                                      const char* id_suffix,
+                                      const char* value_template,
+                                      const char* device_class,
+                                      const char* icon) {
+    std::string state_topic = t("/group/state");
+    std::string avail_topic = t("/availability");
+    std::string unique_id   = g_cfg.device_uid + "_" + id_suffix;
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "name", name);
+    cJSON_AddStringToObject(root, "unique_id", unique_id.c_str());
+    cJSON_AddStringToObject(root, "object_id", unique_id.c_str());
+    cJSON_AddStringToObject(root, "state_topic", state_topic.c_str());
+    cJSON_AddStringToObject(root, "value_template", value_template);
+    if (device_class) cJSON_AddStringToObject(root, "device_class", device_class);
+    if (icon)         cJSON_AddStringToObject(root, "icon", icon);
+    cJSON_AddStringToObject(root, "availability_topic", avail_topic.c_str());
+    cJSON_AddStringToObject(root, "payload_available", "online");
+    cJSON_AddStringToObject(root, "payload_not_available", "offline");
+    cJSON_AddItemToObject(root, "device", make_device_block());
+
+    char* payload = cJSON_PrintUnformatted(root);
+    std::string topic = std::string("homeassistant/") + component + "/" +
+                        g_did + "_" + id_suffix + "/config";
+    int id = payload ? esp_mqtt_client_publish(g_client, topic.c_str(), payload, 0, 1, true) : -1;
+    if (payload) cJSON_free(payload);
+    cJSON_Delete(root);
+    return id < 0 ? ESP_FAIL : ESP_OK;
+}
+
+esp_err_t publish_group_discovery() {
+    if (!g_client) return ESP_ERR_INVALID_STATE;
+    esp_err_t rc = ESP_OK;
+    // A conflicting shared-compressor demand is a "problem" for HA to alert on.
+    if (publish_group_entity("binary_sensor", "Compressor conflict", "group_conflict",
+                             "{{ 'ON' if value_json.conflict else 'OFF' }}",
+                             "problem", "mdi:swap-horizontal-bold") != ESP_OK) rc = ESP_FAIL;
+    if (publish_group_entity("sensor", "Group status", "group_status",
+                             "{{ value_json.status }}",
+                             nullptr, "mdi:heat-pump") != ESP_OK) rc = ESP_FAIL;
+    if (publish_group_entity("sensor", "Compressor locked mode", "group_locked_mode",
+                             "{{ value_json.locked_mode if value_json.locked_mode else 'none' }}",
+                             nullptr, "mdi:lock") != ESP_OK) rc = ESP_FAIL;
+    if (publish_group_entity("sensor", "Compressor locked by", "group_locked_by",
+                             "{{ value_json.locked_by if value_json.locked_by else 'none' }}",
+                             nullptr, "mdi:account-lock") != ESP_OK) rc = ESP_FAIL;
+    if (publish_group_entity("sensor", "Group members", "group_members",
+                             "{{ value_json.member_count }}",
+                             nullptr, "mdi:counter") != ESP_OK) rc = ESP_FAIL;
+    ESP_LOGI(TAG, "publish_group_discovery");
+    return rc;
+}
+
+esp_err_t publish_group_state(const GroupState& g) {
+    if (!g_client) return ESP_ERR_INVALID_STATE;
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "in_group", g.in_group);
+    cJSON_AddStringToObject(root, "status", g.status ? g.status : "");
+    cJSON_AddBoolToObject(root, "conflict", g.conflict);
+    cJSON_AddStringToObject(root, "locked_mode", g.locked_mode ? g.locked_mode : "");
+    cJSON_AddStringToObject(root, "locked_by", g.locked_by ? g.locked_by : "");
+    cJSON_AddNumberToObject(root, "member_count", g.member_count);
+
+    char* payload = cJSON_PrintUnformatted(root);
+    std::string topic = t("/group/state");
+    int id = payload ? esp_mqtt_client_publish(g_client, topic.c_str(), payload, 0, 1, true) : -1;
+    if (payload) cJSON_free(payload);
+    cJSON_Delete(root);
+    return id < 0 ? ESP_FAIL : ESP_OK;
+}
+
 esp_err_t publish_settings(const cn105::Settings& s) {
     if (!g_client) return ESP_ERR_INVALID_STATE;
     cJSON* root = cJSON_CreateObject();

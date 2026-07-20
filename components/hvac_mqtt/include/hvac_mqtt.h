@@ -133,6 +133,28 @@ esp_err_t publish_diag_discovery();
 /// Publish the current diagnostic values (retained JSON) to .../diag/state.
 esp_err_t publish_diag_state(const DiagState& d);
 
+/// Shared-compressor group status mirrored to Home Assistant (additive, optional).
+/// Surfaces the mode-coordination state so HA can alert/automate on a conflict
+/// between heads that share one outdoor unit, without any of the group control
+/// logic living in HA. Populated from the firmware's own GroupView.
+struct GroupState {
+    bool        in_group     = false;
+    const char* status       = "standalone"; ///< ok/standalone/pending_conflict/conflict/indeterminate
+    bool        conflict     = false;         ///< true for conflict + pending_conflict
+    const char* locked_mode  = "";            ///< "HEAT"/"COOL"/"" when the compressor is locked
+    const char* locked_by    = "";            ///< display name of the lock holder ("" if none)
+    int         member_count = 0;
+};
+
+/// Publish the HA MQTT-discovery configs (retained) for the group entities:
+/// a `binary_sensor` conflict (device_class=problem) plus `sensor`s for the
+/// group status, locked mode, lock holder and member count. Additive — leaves
+/// the climate/update/diag contract untouched. Call once after connect.
+esp_err_t publish_group_discovery();
+
+/// Publish the current group status (retained JSON) to .../group/state.
+esp_err_t publish_group_state(const GroupState& g);
+
 bool is_connected();
 
 }  // namespace hvac_mqtt
