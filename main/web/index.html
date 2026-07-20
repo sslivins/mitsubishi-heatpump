@@ -194,6 +194,24 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 .role-desc{font-size:.78em;color:var(--fg-3);margin-bottom:10px}
 .hint{font-size:.78em;color:var(--fg-3);margin:4px 0 0}
 .dimmed{opacity:.4;pointer-events:none;transition:opacity .15s}
+/* ── Shared-compressor group ────────────────────────────────── */
+.gbanner{display:none;font-size:.82em;border-radius:8px;padding:10px 12px;margin-bottom:14px;line-height:1.35}
+.gbanner.show{display:block}
+.gbanner.warn{background:var(--warn-bg);border:1px solid var(--warn-border);color:var(--orange)}
+.gbanner.info{background:var(--info-bg);border:1px solid var(--info-border);color:var(--blue)}
+.gmember{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--border)}
+.gmember:first-child{border-top:none}
+.gdot{width:9px;height:9px;border-radius:50%;background:var(--dot-off);flex:0 0 auto}
+.gdot.known{background:var(--green)}
+.gdot.unknown{background:var(--orange)}
+.gdot.selfdot{background:var(--blue)}
+.gname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.92em}
+.gmode{font-size:.8em;color:var(--fg-3)}
+.glock{font-size:.66em;color:var(--orange);white-space:nowrap}
+.gbtns{display:flex;gap:8px}
+.gbtns .btn{margin-top:0;flex:1;display:flex;align-items:center;justify-content:center;gap:6px}
+.btn-accent{background:var(--accent);color:#fff;margin-top:8px}
+.btn-accent:hover{filter:brightness(1.1)}
 </style>
 </head>
 <body>
@@ -245,8 +263,11 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     <span class="badge" id="bMqtt"><span class="dot"></span>MQTT</span>
   </div>
 
+  <div class="gbanner" id="groupBanner"></div>
+
   <div class="tabs">
     <div class="tab active" data-tab="climate" onclick="showTab('climate')">Climate</div>
+    <div class="tab" data-tab="group" onclick="showTab('group')">Group</div>
     <div class="tab" data-tab="sensors" onclick="showTab('sensors')">Sensors</div>
     <div class="tab" data-tab="power" onclick="showTab('power')">Power</div>
     <div class="tab" data-tab="network" onclick="showTab('network')">Network</div>
@@ -311,6 +332,59 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     </details>
   </div>
   </div><!-- /panel-climate -->
+
+  <div class="panel" id="panel-group">
+  <div class="card">
+    <h2>Shared Compressor Group</h2>
+    <p class="hint">Coordinate HEAT / COOL across heads that share one outdoor
+      compressor, so opposing demands don't fight.</p>
+
+    <div id="gNeedsAdmin" class="note" style="margin-top:12px">Sign in as admin to manage the compressor group.</div>
+
+    <!-- Not in a group -->
+    <div id="gNotInGroup" class="hidden">
+      <p class="role-desc" style="margin-top:12px">This head isn't in a group yet. Create one here and note the code,
+        then join every other head to it — or join a group started on another head.</p>
+      <div class="mqf"><label for="gNewLabel">Group name</label>
+        <input id="gNewLabel" type="text" maxlength="32" placeholder="e.g. Upstairs" autocomplete="off"></div>
+      <button class="btn btn-accent" onclick="groupPairStart()">Create group &amp; show code</button>
+      <div class="wf-head"><span class="wf-head-t">Or join an existing group</span></div>
+      <div class="mqf"><label for="gJoinHost">Owner host</label>
+        <input id="gJoinHost" type="text" placeholder="mitsubishi-heatpump-xxxx.local" autocomplete="off"></div>
+      <div class="mqf"><label for="gJoinCode">6-digit code</label>
+        <input id="gJoinCode" type="text" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off"></div>
+      <button class="btn btn-warn" onclick="groupPairJoin()">Join group</button>
+    </div>
+
+    <!-- In a group -->
+    <div id="gInGroup" class="hidden">
+      <div class="row" style="margin:12px 0 4px">
+        <span class="role-name" id="gLabel">—</span>
+        <span class="pill" id="gStatus">—</span>
+      </div>
+      <div id="gMembers"></div>
+
+      <div id="gResolve" class="hidden" style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+        <p class="wf-head-t" style="margin-bottom:8px">Resolve — set the whole group's mode</p>
+        <div class="gbtns">
+          <button class="btn btn-warn" onclick="groupResolve('HEAT')"><span>☀</span>All → Heat</button>
+          <button class="btn btn-warn" onclick="groupResolve('COOL')"><span>❄</span>All → Cool</button>
+        </div>
+        <label class="mqf" style="margin-top:10px;justify-content:flex-start;gap:8px">
+          <input type="checkbox" id="gOffToggle" style="flex:0 0 auto;max-width:none;width:auto">
+          <span style="font-size:.8em;color:var(--fg-3)">Turn conflicting zones OFF instead of flipping their mode</span></label>
+        <div id="gResolveMsg" class="status hidden" style="margin-top:8px"></div>
+      </div>
+
+      <details class="adv">
+        <summary>Group settings</summary>
+        <button class="btn btn-danger" onclick="groupLeave()">Leave group</button>
+      </details>
+    </div>
+
+    <div id="gPairMsg" class="status hidden" style="margin-top:10px"></div>
+  </div>
+  </div><!-- /panel-group -->
 
   <div class="panel" id="panel-power">
   <div class="card">
@@ -527,6 +601,7 @@ function showTab(name){
   const inSys=sysGroups.includes(name);
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
   $('panel-climate').classList.toggle('active',name==='climate');
+  $('panel-group').classList.toggle('active',name==='group');
   $('panel-power').classList.toggle('active',name==='power');
   $('panel-system').classList.toggle('active',inSys);
   if(inSys){
@@ -541,6 +616,7 @@ function showTab(name){
   // Re-sync stored auth state when opening Security so the pending-change gate
   // and the toggle reflect the current server state, not a stale snapshot.
   if(name==='security'){ loadAuth(); }
+  if(name==='group' && authState.role==='admin'){ refreshGroup(); }
 }
 
 function badge(el,on){el.className='badge '+(on?'on':'off')}
@@ -1335,12 +1411,138 @@ function copyKey(){
 // device's limited socket pool, and fully paused while the tab is hidden.
 // Cadence matches the old intervals: status 5s, wifi 15s, mqtt/update 30s.
 let pollTimer=null, tickN=0;
+// ── Shared-compressor group (Phase 4) ──────────────────────────────────
+function gEsc(s){return (s==null?'':(''+s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function groupStatusText(s){
+  return ({ok:'In sync',standalone:'Standalone',pending_conflict:'Conflict (pending)',
+    conflict:'Conflict',indeterminate:'Unconfirmed'})[s]||s||'—';
+}
+function memberRow(name,demand,dotcls,tag,isLock){
+  return '<div class="gmember">'+
+    '<span class="gdot '+dotcls+'"></span>'+
+    '<span class="gname">'+gEsc(name)+(tag?' <span class="gmode">('+gEsc(tag)+')</span>':'')+'</span>'+
+    (isLock?'<span class="glock">holds unit</span>':'')+
+    '<span class="gmode">'+gEsc(demand||'—')+'</span>'+
+  '</div>';
+}
+function renderGroupBanner(g){
+  const b=$('groupBanner');
+  let cls='',msg='';
+  if(g&&g.in_group){
+    if(g.status==='conflict'){
+      cls='warn';
+      if(g.locked_by){
+        msg='\u26A0 Outdoor unit locked in '+(g.locked_mode||'?')+" by '"+g.locked_by+"'.";
+        const sd=g.self&&g.self.configured_demand;
+        if(sd&&sd!=='NEUTRAL'&&g.locked_mode&&sd!==g.locked_mode) msg+=' This zone ('+sd+") won't run.";
+      } else { msg='\u26A0 Zones are demanding opposite modes on a shared compressor.'; }
+    } else if(g.status==='pending_conflict'){
+      cls='warn'; msg='\u26A0 Two zones want opposite modes \u2014 pick one before they fight.';
+    } else if(g.status==='indeterminate'){
+      cls='info';
+      const u=(g.unknown_members||[]).join(', ');
+      msg="\u26A0 Can't confirm group state"+(u?' \u2014 '+u+' unreachable':'')+'.';
+    }
+  }
+  b.textContent=msg;
+  b.className='gbanner'+(msg?(' show '+cls):'');
+}
+function renderGroupPanel(g){
+  const inG=!!(g&&g.in_group);
+  $('gNeedsAdmin').classList.add('hidden');
+  $('gNotInGroup').classList.toggle('hidden',inG);
+  $('gInGroup').classList.toggle('hidden',!inG);
+  if(!inG) return;
+  $('gLabel').textContent=g.group_label?g.group_label:'(unnamed group)';
+  const st=$('gStatus');
+  st.textContent=groupStatusText(g.status);
+  st.className='pill '+(g.status==='ok'?'':(g.status==='indeterminate'?'limited':'full'));
+  const self=g.self||{};
+  const lockMatch=(nm,uid)=>g.locked_by&&(g.locked_by===nm||g.locked_by===uid);
+  const rows=[ memberRow(self.name||self.uid,self.configured_demand,'selfdot','you',
+      lockMatch(self.name,self.uid)) ];
+  (g.members||[]).forEach(m=>{
+    const known=(m.state==='known');
+    rows.push(memberRow(m.name||m.uid, known?m.configured_demand:null,
+      known?'known':'unknown', known?'':(m.state||'unknown'),
+      lockMatch(m.name,m.uid)));
+  });
+  $('gMembers').innerHTML=rows.join('');
+  $('gResolve').classList.toggle('hidden',(g.member_count||1)<=1);
+}
+async function refreshGroup(){
+  if(authState.role!=='admin') return;
+  let g;
+  try{ const r=await jget('/api/group'); if(!r.ok) return; g=await r.json(); }
+  catch(e){ return; }
+  renderGroupBanner(g);
+  renderGroupPanel(g);
+}
+async function groupResolve(mode){
+  const strat=$('gOffToggle').checked?'off_conflicting':'flip';
+  const msg=$('gResolveMsg'); msg.className='status info'; msg.classList.remove('hidden');
+  msg.textContent='Resolving \u2192 '+mode+'\u2026';
+  try{
+    const r=await fetch('/api/group/resolve',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({target_mode:mode,strategy:strat})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ msg.className='status err'; msg.textContent=(j&&j.error)||'Resolve failed'; return; }
+    const parts=['you: '+(j.self?j.self.result:'?')];
+    (j.results||[]).forEach(x=>parts.push((x.uid||'?')+': '+x.result));
+    const ok=(j.status==='ok');
+    msg.className='status '+(ok?'ok':'err');
+    msg.textContent=(ok?'\u2713 ':'\u26A0 partial \u2014 ')+'all \u2192 '+(j.target_mode||mode)+' ('+parts.join(', ')+')';
+  }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
+  setTimeout(refreshGroup,700);
+}
+async function groupPairStart(){
+  const msg=$('gPairMsg'); msg.className='status info'; msg.classList.remove('hidden');
+  msg.textContent='Opening pairing\u2026';
+  try{
+    const r=await fetch('/api/group/pair/start',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({label:($('gNewLabel').value||'')})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ msg.className='status err'; msg.textContent=(j&&j.error)||'Failed to start pairing'; return; }
+    msg.className='status ok';
+    msg.textContent='Pairing code: '+j.code+' \u2014 enter it on each other head within '+j.seconds_left+'s.';
+    setTimeout(refreshGroup,700);
+  }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
+}
+async function groupPairJoin(){
+  const host=$('gJoinHost').value.trim(), code=$('gJoinCode').value.trim();
+  const msg=$('gPairMsg'); msg.className='status info'; msg.classList.remove('hidden');
+  if(!host||!code){ msg.className='status err'; msg.textContent="Enter the owner head's host and the 6-digit code."; return; }
+  msg.textContent='Joining\u2026';
+  try{
+    const r=await fetch('/api/group/pair/join',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({owner_host:host,code:code})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ msg.className='status err'; msg.textContent=(j&&j.error)||'Join failed'; return; }
+    msg.className='status ok'; msg.textContent='Joined the group.';
+    setTimeout(refreshGroup,700);
+  }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
+}
+async function groupLeave(){
+  if(!confirm('Leave the group? This head will stop coordinating mode with the others.')) return;
+  const msg=$('gPairMsg'); msg.className='status info'; msg.classList.remove('hidden'); msg.textContent='Leaving\u2026';
+  try{
+    const r=await fetch('/api/group/leave',{method:'POST'});
+    if(!r.ok){ msg.className='status err'; msg.textContent='Leave failed'; return; }
+    msg.className='status ok'; msg.textContent='Left the group.';
+    setTimeout(refreshGroup,700);
+  }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
+}
+
 async function pollOnce(){
   await refresh();
   if(authState.role!=='admin'){ tickN++; return; }  // user role: climate only
   if(tickN%3===0) await loadWifi();
   if(netTabActive && tickN%6===0 && $('wfJoin').classList.contains('hidden')) await scanWifi(false);
   if(tickN%6===0){ await refreshUpdate(); await loadMqtt(); }
+  if(tickN%2===0) await refreshGroup();
   tickN++;
 }
 function schedule(ms){ clearTimeout(pollTimer); pollTimer=setTimeout(tick,ms); }
