@@ -883,7 +883,25 @@ function renderClimate(){
   $('dialMode').textContent=climate.power?climate.mode:'OFF';
   $('dialWrap').classList.toggle('off',!climate.power);
   const op=$('opState');
-  op.textContent=!climate.power?'off':(climate.operating?'heating / cooling':'idle');
+  let opTxt;
+  if(!climate.power){ opTxt='off'; }
+  else if(!climate.operating){ opTxt='idle'; }
+  else {
+    switch(climate.mode){
+      case 'HEAT': opTxt='heating'; break;
+      case 'COOL': opTxt='cooling'; break;
+      case 'DRY':  opTxt='drying'; break;
+      case 'FAN':  opTxt='fan running'; break;
+      case 'AUTO':
+        // AUTO doesn't report its direction, so infer from room vs setpoint.
+        if(climate.room!=null && climate.temp!=null && Math.abs(climate.room-climate.temp)>=0.5)
+          opTxt=(climate.room>climate.temp)?'cooling':'heating';
+        else opTxt='active';
+        break;
+      default: opTxt='active';
+    }
+  }
+  op.textContent=opTxt;
   op.className='op'+(climate.power&&climate.operating?' active':'');
   $('tDec').disabled=$('tInc').disabled=!climate.power;
   [...document.querySelectorAll('#modePills button')].forEach(b=>{
