@@ -311,6 +311,59 @@ static void test_is_valid_nonce() {
     CHECK_FALSE(is_valid_nonce(std::string(33, 'a')));  // too long
 }
 
+static void test_parse_resolution_inputs() {
+    CHECK_TRUE(parse_target_mode("HEAT") == Demand::Heat);
+    CHECK_TRUE(parse_target_mode("cool") == Demand::Cool);   // case-insensitive
+    CHECK_TRUE(parse_target_mode("AUTO") == Demand::Neutral);// not a valid target
+    CHECK_TRUE(parse_target_mode("OFF")  == Demand::Neutral);
+    CHECK_TRUE(parse_target_mode("")     == Demand::Neutral);
+
+    CHECK_TRUE(parse_strategy("off_conflicting") == ResolveStrategy::OffConflicting);
+    CHECK_TRUE(parse_strategy("OFF_CONFLICTING") == ResolveStrategy::OffConflicting);
+    CHECK_TRUE(parse_strategy("flip") == ResolveStrategy::FlipMode);
+    CHECK_TRUE(parse_strategy("")     == ResolveStrategy::FlipMode);  // safe default
+    CHECK_TRUE(parse_strategy("bogus")== ResolveStrategy::FlipMode);
+}
+
+static void test_plan_resolution() {
+    const ResolveStrategy flip = ResolveStrategy::FlipMode;
+    const ResolveStrategy off  = ResolveStrategy::OffConflicting;
+
+    // Conflicting zone (COOL vs target HEAT) → flip to HEAT.
+    ResolveOp a = plan_resolution(true, Demand::Cool, Demand::Heat, flip);
+    CHECK_TRUE(a.change);
+    CHECK_FALSE(a.turn_off);
+    CHECK_TRUE(a.set_mode == Demand::Heat);
+
+    // Same conflict, off_conflicting → turn the zone OFF instead.
+    ResolveOp b = plan_resolution(true, Demand::Cool, Demand::Heat, off);
+    CHECK_TRUE(b.change);
+    CHECK_TRUE(b.turn_off);
+
+    // Already aligned with the target → no change.
+    ResolveOp c = plan_resolution(true, Demand::Heat, Demand::Heat, flip);
+    CHECK_FALSE(c.change);
+
+    // Neutral zone (OFF/FAN) is never disturbed — even powered FAN.
+    ResolveOp d = plan_resolution(true, Demand::Neutral, Demand::Heat, flip);
+    CHECK_FALSE(d.change);
+
+    // A not-powered zone is never turned on, whatever its stored mode.
+    ResolveOp e = plan_resolution(false, Demand::Cool, Demand::Heat, flip);
+    CHECK_FALSE(e.change);
+
+    // AUTO conflicts (direction unreadable) → flipped to the explicit target.
+    ResolveOp f = plan_resolution(true, Demand::Auto, Demand::Cool, flip);
+    CHECK_TRUE(f.change);
+    CHECK_TRUE(f.set_mode == Demand::Cool);
+
+    // An invalid target (not Heat/Cool) yields no change.
+    ResolveOp g = plan_resolution(true, Demand::Cool, Demand::Neutral, flip);
+    CHECK_FALSE(g.change);
+    ResolveOp h = plan_resolution(true, Demand::Cool, Demand::Auto, flip);
+    CHECK_FALSE(h.change);
+}
+
 int main() {
     test_hex_roundtrip();
     test_identity_validation();
@@ -322,6 +375,8 @@ int main() {
     test_classify_demand();
     test_observe();
     test_is_valid_nonce();
+    test_parse_resolution_inputs();
+    test_plan_resolution();
     test_group_standalone();
     test_group_ok();
     test_group_conflict_active();

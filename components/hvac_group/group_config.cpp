@@ -27,6 +27,7 @@ constexpr char kNvsNs[] = "hvgroup";
 SemaphoreHandle_t s_mtx = nullptr;
 GroupConfig       s_cfg;
 std::string       s_self_uid;
+uint64_t          s_op_id = 0;  // monotonic resolution op counter (Phase 3)
 
 // Owner-side pairing window. Lives only in RAM (never persisted) and is guarded
 // by s_mtx like the config cache.
@@ -103,6 +104,18 @@ esp_err_t persist_locked(const GroupConfig& c) {
     nvs_close(h);
     return err;
 }
+
+// Persist just the monotonic op_id (kept separate from the group blob so it
+// survives a leave_group() and never rolls backward).
+esp_err_t persist_op_id_locked(uint64_t v) {
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(kNvsNs, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    nvs_set_u64(h, "op_id", v);
+    err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
 }  // namespace
 
 esp_err_t init(const std::string& uid) {
@@ -118,6 +131,7 @@ esp_err_t init(const std::string& uid) {
         std::string peers_blob;
         if (nvs_get_str_std(h, "peers", peers_blob))
             c.peers = deserialize_peers(peers_blob);
+        nvs_get_u64(h, "op_id", &s_op_id);  // absent → stays 0
         nvs_close(h);
     }
     // Defend against corrupt NVS: a malformed id/secret means "not grouped".
@@ -189,6 +203,23 @@ bool is_peer(const std::string& uid) {
     for (const auto& p : s_cfg.peers)
         if (p == uid) return true;
     return false;
+}
+
+uint64_t last_op_id() { Lock lk; return s_op_id; }
+
+uint64_t issue_op_id() {
+    Lock lk;
+    ++s_op_id;
+    persist_op_id_locked(s_op_id);  // best-effort; cache is authoritative
+    return s_op_id;
+}
+
+bool accept_op_id(uint64_t incoming) {
+    Lock lk;
+    if (incoming <= s_op_id) return false;
+    s_op_id = incoming;
+    persist_op_id_locked(s_op_id);
+    return true;
 }
 
 std::string hmac_hex(const std::string& message) {
