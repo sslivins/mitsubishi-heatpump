@@ -1458,7 +1458,8 @@ esp_err_t handle_group_pair_join(httpd_req_t* req) {
     if (oerr != ESP_OK) {
         cJSON_free(reqstr);
         esp_http_client_cleanup(cli);
-        return send_json_error(req, "502 Bad Gateway", "could not reach owner");
+        return send_json_error(req, "502 Bad Gateway",
+            "Couldn't reach the other head. Make sure it's still showing the code and try again.");
     }
     esp_http_client_write(cli, reqstr, strlen(reqstr));
     cJSON_free(reqstr);
@@ -1478,9 +1479,15 @@ esp_err_t handle_group_pair_join(httpd_req_t* req) {
     esp_http_client_cleanup(cli);
 
     if (status != 200) {
-        char msg[64];
-        snprintf(msg, sizeof(msg), "owner rejected claim (HTTP %d)", status);
-        return send_json_error(req, "502 Bad Gateway", msg);
+        const char* msg;
+        switch (status) {
+            case 401: msg = "That code wasn't right. Double-check it and try again."; break;
+            case 410: msg = "That code expired. On the other head, tap Add a zone for a new code."; break;
+            case 429: msg = "Too many tries. The other head paused pairing; tap Add a zone on it again."; break;
+            case 409: msg = "The other head isn't inviting a new zone right now."; break;
+            default:  msg = "The other head didn't accept the request. Please try again."; break;
+        }
+        return send_json_error(req, "400 Bad Request", msg);
     }
 
     cJSON* rj = cJSON_Parse(resp.c_str());
