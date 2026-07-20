@@ -311,11 +311,8 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
   <div class="tabs">
     <div class="tab active" data-tab="climate" onclick="showTab('climate')">Climate</div>
     <div class="tab" data-tab="group" onclick="showTab('group')">Zones</div>
-    <div class="tab" data-tab="sensors" onclick="showTab('sensors')">Sensors</div>
-    <div class="tab" data-tab="power" onclick="showTab('power')">Power</div>
-    <div class="tab" data-tab="network" onclick="showTab('network')">Network</div>
-    <div class="tab" data-tab="security" onclick="showTab('security')">Security</div>
-    <div class="tab" data-tab="system" onclick="showTab('system')">System</div>
+    <div class="tab" data-tab="status" onclick="showTab('status')">Status</div>
+    <div class="tab" data-tab="settings" onclick="showTab('settings')">Settings</div>
   </div>
 
   <div class="panel active" id="panel-climate">
@@ -468,8 +465,20 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
   </div>
   </div><!-- /panel-group -->
 
-  <div class="panel" id="panel-power">
-  <div class="card">
+  <div class="panel" id="panel-system">
+  <div class="card" data-grp="status">
+    <h2>System</h2>
+    <div class="grid">
+      <div class="stat"><div class="k">Firmware</div><div class="v" id="ver">--</div></div>
+      <div class="stat"><div class="k">IP</div><div class="v" id="ip">--</div></div>
+      <div class="stat"><div class="k">Uptime</div><div class="v" id="uptime">--</div></div>
+      <div class="stat"><div class="k">Free heap</div><div class="v" id="heap">--</div></div>
+      <div class="stat"><div class="k">Last reset</div><div class="v" id="rst">--</div></div>
+      <div class="stat"><div class="k">Brownouts</div><div class="v" id="bo">--</div></div>
+    </div>
+  </div>
+
+  <div class="card" data-grp="status">
     <h2>Power</h2>
     <div class="grid">
       <div class="stat"><div class="k">Battery</div><div class="v" id="vbat">--</div></div>
@@ -482,23 +491,8 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
       <div class="stat"><div class="k">Sags</div><div class="v" id="vinSags">--</div></div>
     </div>
   </div>
-  </div><!-- /panel-power -->
 
-  <div class="panel" id="panel-system">
-  <div class="card" data-grp="system">
-    <h2>System</h2>
-    <div class="grid">
-      <div class="stat"><div class="k">Firmware</div><div class="v" id="ver">--</div></div>
-      <div class="stat"><div class="k">IP</div><div class="v" id="ip">--</div></div>
-      <div class="stat"><div class="k">Uptime</div><div class="v" id="uptime">--</div></div>
-      <div class="stat"><div class="k">Free heap</div><div class="v" id="heap">--</div></div>
-      <div class="stat"><div class="k">Last reset</div><div class="v" id="rst">--</div></div>
-      <div class="stat"><div class="k">Brownouts</div><div class="v" id="bo">--</div></div>
-    </div>
-    <button class="btn btn-warn" onclick="sysPost('/api/system/restart','Restart device?')">Restart</button>
-  </div>
-
-  <div class="card" data-grp="network">
+  <div class="card" data-grp="settings">
     <h2>WiFi</h2>
     <div id="wfCurrent"></div>
     <div class="wf-head">
@@ -521,7 +515,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     <button class="btn btn-danger" onclick="sysPost('/api/system/factory_reset','Erase WiFi credentials and reboot into setup mode?',true)">Forget WiFi &amp; reset</button>
   </div>
 
-  <div class="card" data-grp="network">
+  <div class="card" data-grp="settings">
     <h2>MQTT / Home Assistant</h2>
     <div class="grid">
       <div class="stat"><div class="k">Status</div><div class="v" id="mqttStat">--</div></div>
@@ -543,7 +537,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     <button class="btn btn-warn" id="mqSaveBtn" onclick="saveMqtt()">Save &amp; reboot</button>
   </div>
 
-  <div class="card" data-grp="system">
+  <div class="card" data-grp="settings">
     <h2>Firmware</h2>
     <div class="grid">
       <div class="stat"><div class="k">Installed</div><div class="v" id="updCur">--</div></div>
@@ -571,7 +565,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     </details>
   </div>
 
-  <div class="card" data-grp="security">
+  <div class="card" data-grp="settings">
     <h2>Web Access</h2>
     <div class="row">
       <label>Require login to open the web UI</label>
@@ -605,7 +599,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     <div id="secSaveNote" class="hint" style="margin:8px 0 0;text-align:center"></div>
   </div>
 
-  <div class="card" data-grp="security">
+  <div class="card" data-grp="settings">
     <h2>API Access</h2>
     <div class="row">
       <label>Require API key for /api</label>
@@ -627,7 +621,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     </p>
   </div>
 
-  <div class="card" data-grp="sensors">
+  <div class="card" data-grp="status">
     <h2>Heat pump sensors</h2>
     <div class="grid">
       <div class="stat"><div class="k">Unit link</div><div class="v" id="dgLink">--</div></div>
@@ -643,6 +637,12 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
       <div class="stat"><div class="k">Fan stage</div><div class="v" id="dgStg">--</div></div>
       <div class="stat"><div class="k">Error</div><div class="v" id="dgErr">--</div></div>
     </div>
+  </div>
+
+  <div class="card" data-grp="settings">
+    <h2>Device</h2>
+    <div class="sub" style="margin:-4px 0 14px">Restart the controller. Settings and WiFi are preserved.</div>
+    <button class="btn btn-warn" onclick="sysPost('/api/system/restart','Restart device?')">Restart</button>
   </div>
   </div><!-- /panel-system -->
 </div>
@@ -729,28 +729,27 @@ async function jget(url,opts){
 }
 
 function showTab(name){
-  // Climate and Power are their own panels. Network, Security and System all
-  // live inside #panel-system and are shown by filtering cards on data-grp,
-  // so the System tab stays uncluttered without separate panel containers.
-  const sysGroups=['system','network','security','sensors'];
+  // Climate and Zones are their own panels. Status (read-only telemetry) and
+  // Settings (configuration) both live inside #panel-system and are shown by
+  // filtering cards on data-grp, so each stays a focused, uncluttered view.
+  const sysGroups=['status','settings'];
   const inSys=sysGroups.includes(name);
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
   $('panel-climate').classList.toggle('active',name==='climate');
   $('panel-group').classList.toggle('active',name==='group');
-  $('panel-power').classList.toggle('active',name==='power');
   $('panel-system').classList.toggle('active',inSys);
   if(inSys){
     document.querySelectorAll('#panel-system [data-grp]').forEach(c=>{
       c.style.display=(c.dataset.grp===name)?'':'none';
     });
   }
-  // Scan on entering the Network tab; the poll loop keeps it fresh while shown.
-  netTabActive=(name==='network');
+  // Scan WiFi on entering Settings; the poll loop keeps it fresh while shown.
+  netTabActive=(name==='settings');
   mqEditing=false;   // switching tabs commits/abandons any in-progress MQTT edit
   if(netTabActive && authState.role==='admin'){ closeJoin(); scanWifi(true); }
-  // Re-sync stored auth state when opening Security so the pending-change gate
+  // Re-sync stored auth state when opening Settings so the pending-change gate
   // and the toggle reflect the current server state, not a stale snapshot.
-  if(name==='security'){ loadAuth(); }
+  if(name==='settings'){ loadAuth(); }
   if(name==='group' && authState.role==='admin'){ refreshGroup(); }
 }
 
@@ -1148,7 +1147,7 @@ let wifiMode='';         // connected | connecting | provisioning | idle
 let curAuth=-1;          // auth mode of the current network (0=open, -1=unknown)
 let curRssi=0;           // live RSSI of the current association (dBm), 0=n/a
 let wifiInfoKnown=false; // set once /api/wifi has returned (avoids first-load flicker)
-let netTabActive=false;  // whether the Network tab is showing (drives auto-rescan)
+let netTabActive=false;  // whether the Settings tab is showing (drives WiFi auto-rescan)
 
 async function loadWifi(){
   try{
