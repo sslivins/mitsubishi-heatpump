@@ -407,6 +407,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
           <button class="btn btn-accent" onclick="groupJoinSelected()">Add this zone</button>
           <button class="btn" onclick="groupJoinCancel()">Cancel</button>
         </div>
+        <div id="gJoinMsg" class="status hidden" style="margin-top:8px"></div>
       </div>
 
       <details class="gadv">
@@ -1702,6 +1703,22 @@ async function groupPairStart(){
   }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
 }
 let gSelHost='';  // host of the tapped discovery candidate (single selected target)
+// Set a status line by element id. hide=true clears it. cls is '', 'ok', 'err', 'info'.
+function setElMsg(id,text,cls,hide){
+  const e=$(id); if(!e) return;
+  if(hide){ e.classList.add('hidden'); return; }
+  e.className='status '+(cls||''); e.textContent=text; e.classList.remove('hidden');
+}
+// Terminal pairing toast: shown in gPairMsg, scrolled into view (so it isn't
+// off-screen at the bottom on mobile) and auto-dismissed after autoHideMs.
+let pairMsgTimer=null;
+function pairMsg(text,cls,autoHideMs){
+  const e=$('gPairMsg'); if(!e) return;
+  if(pairMsgTimer){ clearTimeout(pairMsgTimer); pairMsgTimer=null; }
+  e.className='status '+(cls||''); e.textContent=text; e.classList.remove('hidden');
+  try{ e.scrollIntoView({block:'nearest'}); }catch(_){}
+  if(autoHideMs){ pairMsgTimer=setTimeout(()=>{ e.classList.add('hidden'); },autoHideMs); }
+}
 // Scan the LAN for heads currently offering to add a zone (advertising pair=1).
 async function groupDiscover(){
   const msg=$('gDiscoverMsg'); msg.className='status info'; msg.classList.remove('hidden');
@@ -1743,37 +1760,35 @@ function selectCandidate(host,group,via){
   $('gJoinCard').classList.remove('hidden');
   $('gJoinCode').focus();
 }
-function groupJoinCancel(){ gSelHost=''; $('gJoinCard').classList.add('hidden'); }
+function groupJoinCancel(){ gSelHost=''; $('gJoinCard').classList.add('hidden'); setElMsg('gJoinMsg','',null,true); }
 async function groupJoinSelected(){
   const code=($('gJoinCode').value||'').trim();
-  const msg=$('gPairMsg'); msg.className='status info'; msg.classList.remove('hidden');
-  if(!gSelHost){ msg.className='status err'; msg.textContent='Pick a group to join first.'; return; }
-  if(!code){ msg.className='status err'; msg.textContent='Enter the 6-digit code.'; return; }
-  msg.textContent='Adding this zone\u2026';
-  await joinViaHost(gSelHost,code,msg);
+  if(!gSelHost){ setElMsg('gJoinMsg','Pick a group to join first.','err'); return; }
+  if(!code){ setElMsg('gJoinMsg','Enter the 6-digit code shown on the other head.','err'); return; }
+  await joinViaHost(gSelHost,code,'gJoinMsg');
 }
 // Manual fallback: type the head's address + code directly.
 async function groupPairJoinManual(){
   const host=$('gJoinHost').value.trim(), code=$('gJoinCodeM').value.trim();
-  const msg=$('gPairMsg'); msg.className='status info'; msg.classList.remove('hidden');
-  if(!host||!code){ msg.className='status err'; msg.textContent="Enter the head's address and the 6-digit code."; return; }
-  msg.textContent='Joining\u2026';
-  await joinViaHost(host,code,msg);
+  if(!host||!code){ setElMsg('gPairMsg',"Enter the head's address and the 6-digit code.",'err'); return; }
+  await joinViaHost(host,code,'gPairMsg');
 }
-async function joinViaHost(host,code,msg){
+async function joinViaHost(host,code,targetId){
+  setElMsg(targetId,'Adding this zone\u2026','info');
   try{
     const r=await fetch('/api/group/pair/join',{method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({owner_host:host,code:code})});
     const j=await r.json().catch(()=>({}));
-    if(!r.ok){ msg.className='status err'; msg.textContent=(j&&j.error)||'Could not add this zone.'; return; }
-    msg.className='status ok'; msg.textContent='Added to “'+(j.group_label||'the group')+'”.';
+    if(!r.ok){ setElMsg(targetId,(j&&j.error)||'Could not add this zone. Please try again.','err'); return; }
+    setElMsg(targetId,'',null,true);
     groupJoinCancel();
+    pairMsg('Added to \u201c'+(j.group_label||'the group')+'\u201d.','ok',6000);
     setTimeout(refreshGroup,700);
-  }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
+  }catch(e){ setElMsg(targetId,'Network error \u2014 could not reach this device.','err'); }
 }
 // ── Owner: open a pairing window so a new head can join this group ──────
-let gAddTimer=null, gAddDeadline=0, gAddBaseCount=0;
+let gAddTimer=null, gAddDeadline=0, gAddBaseCount=0, gAddBaseUids=[];
 async function groupAddZone(){
   const msg=$('gPairMsg'); msg.className='status info'; msg.classList.remove('hidden');
   msg.textContent='Opening\u2026';
@@ -1783,8 +1798,15 @@ async function groupAddZone(){
     const j=await r.json().catch(()=>({}));
     if(!r.ok){ msg.className='status err'; msg.textContent=(j&&j.error)||'Could not open pairing.'; return; }
     msg.classList.add('hidden');
-    // Record current member count so we can tell a join from an expiry.
-    try{ const gr=await jget('/api/group'); const g=await gr.json(); gAddBaseCount=g.member_count||1; }catch(e){ gAddBaseCount=0; }
+    // Snapshot current members so we can name whoever joins (and tell a join
+    // from an expiry).
+    gAddBaseCount=0; gAddBaseUids=[];
+    try{
+      const gr=await jget('/api/group'); const g=await gr.json();
+      gAddBaseCount=g.member_count||1;
+      if(g.self&&g.self.uid) gAddBaseUids.push(g.self.uid);
+      (g.members||[]).forEach(m=>gAddBaseUids.push(m.uid));
+    }catch(e){}
     $('gAddCode').textContent=j.code;
     $('gAddZoneCard').classList.remove('hidden');
     gAddDeadline=Date.now()+((j.seconds_left||120)*1000);
@@ -1804,11 +1826,16 @@ async function pollAddZone(){
   }
   // Window closed — a head joined or it expired/locked out.
   closeAddZone();
-  const msg=$('gPairMsg'); msg.classList.remove('hidden');
-  let joined=false;
-  try{ const r=await jget('/api/group'); const g=await r.json(); joined=(g.member_count||0)>gAddBaseCount; }catch(e){}
-  if(joined){ msg.className='status ok'; msg.textContent='A zone joined the group.'; }
-  else{ msg.className='status'; msg.textContent='Pairing window closed.'; }
+  let joinedName=null;
+  try{
+    const r=await jget('/api/group'); const g=await r.json();
+    if((g.member_count||0)>gAddBaseCount){
+      const nu=(g.members||[]).find(m=>gAddBaseUids.indexOf(m.uid)<0);
+      joinedName=nu?(nu.name||nu.uid):'A new zone';
+    }
+  }catch(e){}
+  if(joinedName!==null){ pairMsg('\u201c'+joinedName+'\u201d joined the group.','ok',6000); }
+  else{ pairMsg('Pairing window closed.','',6000); }
   refreshGroup();
 }
 function closeAddZone(){
@@ -1818,18 +1845,18 @@ function closeAddZone(){
 async function groupAddZoneCancel(){
   closeAddZone();
   try{ await fetch('/api/group/pair/stop',{method:'POST'}); }catch(e){}
-  const msg=$('gPairMsg'); msg.className='status'; msg.classList.remove('hidden'); msg.textContent='Pairing cancelled.';
+  pairMsg('Pairing cancelled.','',5000);
   refreshGroup();
 }
 async function groupLeave(){
   if(!(await uiConfirm({title:'Leave the group?',body:'This head will stop coordinating mode with the others.',okText:'Leave',danger:true}))) return;
-  const msg=$('gPairMsg'); msg.className='status info'; msg.classList.remove('hidden'); msg.textContent='Leaving\u2026';
+  pairMsg('Leaving\u2026','info');
   try{
     const r=await fetch('/api/group/leave',{method:'POST'});
-    if(!r.ok){ msg.className='status err'; msg.textContent='Leave failed'; return; }
-    msg.className='status ok'; msg.textContent='Left the group.';
+    if(!r.ok){ pairMsg('Leave failed. Please try again.','err',6000); return; }
+    pairMsg('Left the group.','ok',5000);
     setTimeout(refreshGroup,700);
-  }catch(e){ msg.className='status err'; msg.textContent='Network error'; }
+  }catch(e){ pairMsg('Network error \u2014 could not reach this device.','err',6000); }
 }
 async function groupRename(){
   const label=($('gRenameInput').value||'').trim();
