@@ -1688,8 +1688,8 @@ function memberRow(o){
   let stats='';
   const parts=[];
   if(o.mode) parts.push('<span class="gmstat"><b>'+gEsc(modeCap(o.mode))+'</b></span>');
-  if(o.room!=null) parts.push('<span class="gmstat">Now <b>'+fmtTemp(o.room)+unitSym()+'</b></span>');
-  if(o.target!=null) parts.push('<span class="gmstat">Set <b>'+fmtTemp(o.target)+unitSym()+'</b></span>');
+  if(o.room!=null) parts.push('<span class="gmstat">Current <b>'+fmtTemp(o.room)+unitSym()+'</b></span>');
+  if(o.target!=null) parts.push('<span class="gmstat">Target <b>'+fmtTemp(o.target)+unitSym()+'</b></span>');
   if(parts.length) stats='<div class="gmstats">'+parts.join('')+'</div>';
   // A whole card is a link to that zone's own UI. Buttons live inside and are
   // handled first by the delegated listener (so a tap on ✕/Leave never
@@ -1745,7 +1745,7 @@ function renderGroupPanel(g){
   const inConflict=(g.status==='conflict'||g.status==='pending_conflict');
   const lockMatch=(nm,uid)=>inConflict&&g.locked_by&&(g.locked_by===nm||g.locked_by===uid);
   const rows=[ memberRow({
-      name:self.name||self.uid, dotcls:'selfdot', tag:'you',
+      name:self.name||self.uid, dotcls:'selfdot', tag:'This Device',
       isLock:lockMatch(self.name,self.uid), uid:self.uid, isPeer:false,
       mode:self.mode, room:self.roomTemp, target:self.targetTemp, url:null }) ];
   (g.members||[]).forEach(m=>{
