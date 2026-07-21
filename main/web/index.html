@@ -977,6 +977,7 @@ async function saveDisplayUnit(){
     msg.classList.add('hidden');
   }catch(e){ fail('Save failed'); }
 }
+const MODE_COLOR={HEAT:'#ff7b29',COOL:'#3b9bff',AUTO:'#3fb950',DRY:'#9aa4ad',FAN:'#9aa4ad'};
 // --- Wide-vane capability -------------------------------------------------
 const WV_STATUS={supported:'Powered (detected)',unsupported:'Manual louver (no motor)',
   inconclusive:'Not determined yet',unknown:'Not detected yet'};
