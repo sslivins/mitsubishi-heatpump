@@ -13,7 +13,7 @@ info:
     browser session cookie. When API access is disabled, the endpoints are open
     on the local network. The API key is shown (and can be regenerated) in the
     dashboard's *API Access* card.
-  version: 0.2.22
+  version: 0.2.98
   license:
     name: See repository
     url: https://github.com/sslivins/mitsubishi-heatpump
@@ -37,6 +37,12 @@ tags:
     description: Restart, factory reset
   - name: Auth
     description: Login, sessions and API-key management
+  - name: Capabilities
+    description: Detected feature support and user overrides
+  - name: Activity
+    description: On-device activity log
+  - name: Groups
+    description: Shared-compressor mode coordination between paired heads
 paths:
   /api/status:
     get:
@@ -362,6 +368,413 @@ paths:
           description: Invalid body, or enabling web login with no password
         '401':
           description: Not authorized to change auth settings
+  /api/capabilities:
+    get:
+      tags: [Capabilities]
+      summary: Detected feature support and user overrides
+      description: Currently reports wide-vane support only.
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Capability snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Capabilities' }
+    post:
+      tags: [Capabilities]
+      summary: Set a capability override or trigger detection
+      description: |
+        Set `override` to force the wide-vane control shown/hidden regardless of
+        detection, and/or set `detect: true` to run an on-demand detection probe
+        (briefly moves the vane).
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CapabilitiesUpdate' }
+      responses:
+        '200':
+          description: Applied
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatusOk' }
+        '400':
+          description: Empty, oversized or invalid JSON body
+  /api/device:
+    post:
+      tags: [System]
+      summary: Set the device display name and/or temperature display unit
+      description: |
+        Partial update — only the fields present are applied, so a `temp_unit`-only
+        POST won't clear the display name (and vice versa). `temp_unit` controls
+        the web UI display only.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeviceUpdate' }
+      responses:
+        '200':
+          description: Canonical (sanitised) values after the update
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceResult' }
+        '400':
+          description: Empty, oversized or invalid JSON body
+        '500':
+          description: NVS write failed
+  /api/scan:
+    get:
+      tags: [Network]
+      summary: Scan for nearby WiFi networks (blocking)
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Networks found, strongest first, de-duplicated by SSID
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WifiNetwork' }
+        '500':
+          description: Scan failed
+  /api/events:
+    get:
+      tags: [Activity]
+      summary: Recent activity-log events (newest first)
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: since
+          in: query
+          description: Only return events with a `seq` greater than this value.
+          schema: { type: integer, default: 0 }
+        - name: limit
+          in: query
+          description: Maximum number of events to return (capped by the ring size).
+          schema: { type: integer, default: 100 }
+      responses:
+        '200':
+          description: Activity log page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventsResponse' }
+    delete:
+      tags: [Activity]
+      summary: Clear the activity log
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+  /api/group:
+    get:
+      tags: [Groups]
+      summary: Group membership, self state, members and conflicts
+      security:
+        - ApiKeyAuth: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Current group view
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupView' }
+  /api/group/state:
+    get:
+      tags: [Groups]
+      summary: Peer state snapshot (device-to-device, HMAC-signed)
+      description: |
+        Machine-to-machine endpoint polled by group peers. Authenticated by the
+        `X-Group-*` HMAC headers, not by an API key or session cookie. The
+        response body is signed with an `X-Group-Sig` response header.
+      parameters:
+        - { name: X-Group-Sender, in: header, required: true, schema: { type: string } }
+        - { name: X-Group-Id, in: header, required: true, schema: { type: string } }
+        - { name: X-Group-Nonce, in: header, required: true, schema: { type: string } }
+        - { name: X-Group-Sig, in: header, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Signed peer snapshot (replica state + protocol version)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pv: { type: integer, description: Protocol version }
+                additionalProperties: true
+        '401':
+          description: Invalid sender, nonce, group id or signature
+        '403':
+          description: Not in a group
+  /api/group/pair/start:
+    post:
+      tags: [Groups]
+      summary: Begin a pairing window (owner side)
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string, description: Optional new group label }
+      responses:
+        '200':
+          description: Pairing window opened
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PairStartResult' }
+        '500':
+          description: Could not start pairing
+  /api/group/pair/stop:
+    post:
+      tags: [Groups]
+      summary: Close the pairing window
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: stopped }
+  /api/group/pair/status:
+    get:
+      tags: [Groups]
+      summary: Pairing-window status
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Pairing status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PairStatus' }
+  /api/group/pair/discover:
+    get:
+      tags: [Groups]
+      summary: Discover nearby pairable devices (mDNS)
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Candidate devices (may be empty)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PairDiscover' }
+  /api/group/pair/claim:
+    post:
+      tags: [Groups]
+      summary: Claim a pairing code (joiner to owner, unauthenticated)
+      description: |
+        Called by a joining device against the owner during its pairing window.
+        Not gated by API key or session — the short-lived 6-digit code is the
+        credential. Rate-limited with lockout after repeated bad codes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [joiner_uid, code]
+              properties:
+                joiner_uid: { type: string }
+                code: { type: string }
+                joiner_name: { type: string }
+      responses:
+        '200':
+          description: Claim accepted; group secret + replica returned
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PairClaimResult' }
+        '401':
+          description: Invalid code
+        '409':
+          description: No active pairing window
+        '410':
+          description: Code expired
+        '429':
+          description: Locked out after too many attempts
+  /api/group/pair/join:
+    post:
+      tags: [Groups]
+      summary: Join an existing group (joiner side, drives the claim)
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [owner_host, code]
+              properties:
+                owner_host: { type: string, description: Owner IP or hostname }
+                code: { type: string }
+      responses:
+        '200':
+          description: Joined
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupJoinResult' }
+        '400':
+          description: Missing or invalid owner_host or code
+        '500':
+          description: HTTP init failed, bad owner response or adoption failed
+        '502':
+          description: Owner unreachable
+  /api/group/leave:
+    post:
+      tags: [Groups]
+      summary: Leave the current group
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Left
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: left }
+        '500':
+          description: NVS write failed
+  /api/group/sync:
+    post:
+      tags: [Groups]
+      summary: Apply a coordinated mode change from a peer (HMAC-signed)
+      description: |
+        Device-to-device. Authenticated by the `X-Group-*` HMAC headers; the
+        response also carries an `X-Group-Sig` header.
+      parameters:
+        - { name: X-Group-Sender, in: header, required: true, schema: { type: string } }
+        - { name: X-Group-Id, in: header, required: true, schema: { type: string } }
+        - { name: X-Group-Nonce, in: header, required: true, schema: { type: string } }
+        - { name: X-Group-Sig, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [op_id, target_mode, strategy]
+              properties:
+                op_id: { type: integer }
+                target_mode: { type: string, enum: [HEAT, COOL] }
+                strategy: { type: string, enum: [flip, off_conflicting] }
+      responses:
+        '200':
+          description: Applied / aligned / stale / dwell result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupSyncResult' }
+        '400':
+          description: Invalid JSON, op_id or target_mode
+        '401':
+          description: Invalid sender, nonce, group id or signature
+        '403':
+          description: Not in a group
+        '500':
+          description: Out of memory building the response
+  /api/group/resolve:
+    post:
+      tags: [Groups]
+      summary: Owner-initiated coordinated whole-group mode switch
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_mode]
+              properties:
+                target_mode: { type: string, enum: [HEAT, COOL] }
+                strategy: { type: string, enum: [flip, off_conflicting] }
+      responses:
+        '200':
+          description: Coordination result across self + peers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupResolveResult' }
+        '400':
+          description: Empty, oversized or invalid body, or bad target_mode
+  /api/group/label:
+    post:
+      tags: [Groups]
+      summary: Rename the group
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties:
+                label: { type: string }
+      responses:
+        '200':
+          description: Renamed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatusOk' }
+        '400':
+          description: Empty, oversized or invalid body
+        '409':
+          description: Not in a group
+        '500':
+          description: NVS write failed
+  /api/group/member/remove:
+    post:
+      tags: [Groups]
+      summary: Remove a member from the group by uid
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [uid]
+              properties:
+                uid: { type: string }
+      responses:
+        '200':
+          description: Removed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatusOk' }
+        '400':
+          description: Empty/oversized/invalid body, bad uid, or cannot remove self (use leave)
+        '409':
+          description: Not in a group
+        '500':
+          description: NVS write failed
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -391,7 +804,9 @@ components:
       properties:
         version: { type: string }
         hostname: { type: string }
+        name: { type: string, description: User-set display name }
         ip: { type: string }
+        rssi: { type: integer, description: WiFi signal strength in dBm }
         unit_connected: { type: boolean }
         mqtt_connected: { type: boolean }
         uptime_s: { type: integer }
@@ -402,8 +817,21 @@ components:
             present: { type: boolean }
             vbat_mv: { type: integer }
             vin_mv: { type: integer }
+            vinout_mv: { type: integer }
+            input_mv: { type: integer }
             source: { type: string }
             charging: { type: boolean }
+        diag:
+          type: object
+          description: Power/brownout diagnostics
+          properties:
+            boot_count: { type: integer }
+            brownout_count: { type: integer }
+            reset_reason: { type: string }
+            last_was_brownout: { type: boolean }
+            vin_min_mv: { type: integer }
+            vin_min_ever_mv: { type: integer }
+            vin_sag_count: { type: integer }
     Settings:
       type: object
       properties:
@@ -414,9 +842,19 @@ components:
         vane: { type: string }
         wideVane: { type: string }
         connected: { type: boolean }
+        temp_unit: { type: string, enum: [C, F], description: Web UI display unit (Home Assistant stays in °C) }
+        caps: { $ref: '#/components/schemas/SettingsCaps' }
         roomTemperature: { type: number }
         operating: { type: boolean }
         compressorFrequency: { type: number }
+        outsideTemp: { type: number, description: Only present when reported by the unit }
+        runtimeHours: { type: number, description: Only present when reported by the unit }
+        inputPowerW: { type: number, description: Only present when reported by the unit }
+        energyKwh: { type: number, description: Only present when reported by the unit }
+        targetHumidity: { type: number, description: Only present when reported by the unit }
+        subMode: { type: string, description: Only present when reported by the unit }
+        stage: { type: string, description: Only present when reported by the unit }
+        errorCode: { type: string, description: Only present when reported by the unit }
     SettingsUpdate:
       type: object
       properties:
@@ -512,3 +950,196 @@ components:
         api_key:
           type: string
           description: Only present when regenerated in this request.
+    WideVaneCap:
+      type: object
+      properties:
+        detected: { type: string, enum: [unknown, supported, unsupported, inconclusive] }
+        override: { type: string, enum: [auto, show, hide] }
+        detecting: { type: boolean, description: True while a detection probe is running }
+        show: { type: boolean, description: Whether the UI should show the wide-vane control }
+    SettingsCaps:
+      type: object
+      properties:
+        wideVane: { $ref: '#/components/schemas/WideVaneCap' }
+    Capabilities:
+      type: object
+      properties:
+        wideVane: { $ref: '#/components/schemas/WideVaneCap' }
+        unit_connected: { type: boolean }
+        unit_on: { type: boolean }
+    CapabilitiesUpdate:
+      type: object
+      properties:
+        wideVane:
+          type: object
+          properties:
+            override: { type: string, enum: [auto, show, hide] }
+            detect: { type: boolean, description: Run an on-demand detection probe }
+    DeviceUpdate:
+      type: object
+      properties:
+        name: { type: string, description: Device display name }
+        temp_unit: { type: string, enum: [C, F] }
+    DeviceResult:
+      type: object
+      properties:
+        name: { type: string }
+        temp_unit: { type: string, enum: [C, F] }
+    WifiNetwork:
+      type: object
+      properties:
+        ssid: { type: string }
+        rssi: { type: integer, description: Signal strength in dBm }
+        auth: { type: integer, description: esp_wifi authmode enum (0 = open) }
+    Event:
+      type: object
+      properties:
+        seq: { type: integer, description: Monotonic sequence id }
+        ts: { type: integer, description: Unix epoch seconds; 0 until the clock syncs }
+        up: { type: integer, description: Uptime in milliseconds when logged }
+        cat:
+          type: integer
+          description: >-
+            Category: 0 Mode, 1 Power, 2 Setpoint, 3 Fan, 4 Group, 5 Membership,
+            6 Ota, 7 Net, 8 Unit, 9 Fault, 10 System.
+        act:
+          type: integer
+          description: 'Actor: 0 System, 1 WebUI, 2 HomeAssistant, 3 Group, 4 Local.'
+        msg: { type: string }
+        name: { type: string, description: Username or peer name; omitted for system events }
+    EventsResponse:
+      type: object
+      properties:
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/Event' }
+        now_epoch: { type: integer }
+        clock_valid: { type: boolean }
+        seq: { type: integer, description: Current high-water sequence id }
+    GroupMember:
+      type: object
+      properties:
+        uid: { type: string }
+        name: { type: string }
+        state: { type: string, enum: [known, incompatible, unknown] }
+        configured_demand: { type: string, description: Present when state is known }
+        mode: { type: string }
+        roomTemp: { type: number }
+        targetTemp: { type: number }
+        ip: { type: string }
+    GroupSelf:
+      type: object
+      properties:
+        uid: { type: string }
+        name: { type: string }
+        configured_demand: { type: string }
+        operating: { type: boolean }
+        standby: { type: boolean }
+        mode: { type: string }
+        roomTemp: { type: number }
+        targetTemp: { type: number }
+        ip: { type: string }
+    GroupConflict:
+      type: object
+      properties:
+        uid: { type: string }
+        name: { type: string }
+        wants: { type: string }
+    GroupView:
+      type: object
+      properties:
+        group_id: { type: string }
+        group_label: { type: string }
+        in_group: { type: boolean }
+        protocol_version: { type: integer }
+        self: { $ref: '#/components/schemas/GroupSelf' }
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/GroupMember' }
+        member_count: { type: integer }
+        status: { type: string, description: 'e.g. ok, conflict, indeterminate' }
+        locked_mode: { type: string, nullable: true }
+        locked_by: { type: string }
+        conflicts:
+          type: array
+          items: { $ref: '#/components/schemas/GroupConflict' }
+        unknown_members:
+          type: array
+          items: { type: string }
+        warnings:
+          type: array
+          items: { type: string }
+    PairStartResult:
+      type: object
+      properties:
+        code: { type: string, description: 6-digit pairing code }
+        seconds_left: { type: integer }
+        attempts_left: { type: integer }
+        group_id: { type: string }
+        group_label: { type: string }
+    PairStatus:
+      type: object
+      properties:
+        active: { type: boolean }
+        seconds_left: { type: integer }
+        attempts_left: { type: integer }
+    PairCandidate:
+      type: object
+      properties:
+        uid: { type: string }
+        name: { type: string }
+        glabel: { type: string, description: Advertised group label }
+        host: { type: string, description: IP or hostname }
+    PairDiscover:
+      type: object
+      properties:
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/PairCandidate' }
+    PairClaimResult:
+      type: object
+      properties:
+        group_id: { type: string }
+        group_label: { type: string }
+        group_secret: { type: string }
+        members:
+          type: array
+          items: { type: string }
+        replica:
+          type: object
+          description: Compact CRDT replica snapshot (present when available)
+          additionalProperties: true
+    GroupJoinResult:
+      type: object
+      properties:
+        status: { type: string, example: joined }
+        group_id: { type: string }
+        group_label: { type: string }
+        member_count: { type: integer }
+    GroupSyncResult:
+      type: object
+      properties:
+        uid: { type: string }
+        op_id: { type: integer }
+        applied: { type: boolean }
+        reason: { type: string, enum: [applied, aligned, stale, dwell] }
+        pv: { type: integer }
+    GroupResolveResult:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, partial] }
+        op_id: { type: integer }
+        target_mode: { type: string }
+        strategy: { type: string }
+        self:
+          type: object
+          properties:
+            uid: { type: string }
+            result: { type: string }
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              uid: { type: string }
+              result: { type: string }

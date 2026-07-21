@@ -10,7 +10,10 @@ on:
       - 'components/hvac_group/include/group_proto.h'
       - 'test/host/**'
       - 'test/ui/**'
+      - 'test/api/**'
       - 'main/web/index.html'
+      - 'main/web_ui.cpp'
+      - 'openapi.yaml'
       - '.github/workflows/host-tests.yml'
   pull_request:
     branches: [main]
@@ -21,7 +24,10 @@ on:
       - 'components/hvac_group/include/group_proto.h'
       - 'test/host/**'
       - 'test/ui/**'
+      - 'test/api/**'
       - 'main/web/index.html'
+      - 'main/web_ui.cpp'
+      - 'openapi.yaml'
       - '.github/workflows/host-tests.yml'
 
 jobs:
@@ -61,3 +67,7 @@ jobs:
       - name: Check web UI render path (runtime smoke)
         shell: bash
         run: node test/ui/check_render_runtime.mjs
+
+      - name: Check openapi.yaml matches the API routes
+        shell: bash
+        run: node test/api/check_openapi_routes.mjs
