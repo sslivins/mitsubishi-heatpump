@@ -18,11 +18,13 @@
 #include "web_ui.h"
 #include "ota.h"
 #include "diag.h"
+#include "events.h"
 #include "status_led.h"
 
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 #include <strings.h>
 #include <string>
 #include <mutex>
@@ -31,6 +33,7 @@
 #include "esp_app_desc.h"
 #include "esp_mac.h"
 #include "nvs_flash.h"
+#include "esp_netif_sntp.h"
 #include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -198,11 +201,46 @@ void on_mqtt_command(const hvac_mqtt::Command& cmd) {
 // web_ui::apply_command → on_mqtt_command — funnels through the plain applier,
 // so there is no re-entrancy.
 void on_mqtt_command_external(const hvac_mqtt::Command& cmd) {
-    if (cmd.kind == hvac_mqtt::Command::Kind::Mode &&
-        web_ui::try_group_mode_command(cmd.value)) {
-        return;  // handled as a coordinated whole-group switch
+    using K = hvac_mqtt::Command::Kind;
+    if (cmd.kind == K::Mode && web_ui::try_group_mode_command(cmd.value)) {
+        return;  // handled as a coordinated whole-group switch (already logged)
     }
     on_mqtt_command(cmd);
+
+    // Record the human-meaningful Home Assistant actions in the activity log.
+    // Group-promoted mode switches returned above; everything here is a plain
+    // local apply on this head.
+    auto cap = [](const std::string& s) {
+        std::string o = s;
+        for (auto& c : o) c = (c == '_') ? ' ' : (char)tolower((unsigned char)c);
+        if (!o.empty()) o[0] = (char)toupper((unsigned char)o[0]);
+        return o;
+    };
+    switch (cmd.kind) {
+        case K::Mode:
+            if (strcasecmp(cmd.value.c_str(), "off") == 0)
+                events::log(events::Cat::Power, events::Actor::HomeAssistant, "Turned off");
+            else
+                events::log(events::Cat::Mode, events::Actor::HomeAssistant,
+                            ("Set to " + cap(cmd.value)).c_str());
+            break;
+        case K::Power:
+            events::log(events::Cat::Power, events::Actor::HomeAssistant,
+                        strcasecmp(cmd.value.c_str(), "off") == 0 ? "Turned off" : "Turned on");
+            break;
+        case K::Temperature: {
+            char msg[48];
+            snprintf(msg, sizeof(msg), "Target set to %.1f\xC2\xB0""C",
+                     strtof(cmd.value.c_str(), nullptr));
+            events::log(events::Cat::Setpoint, events::Actor::HomeAssistant, msg);
+            break;
+        }
+        case K::Fan:
+            events::log(events::Cat::Fan, events::Actor::HomeAssistant,
+                        ("Fan set to " + cap(cmd.value)).c_str());
+            break;
+        default: break;  // vane/remoteTemp/system/ota not logged here
+    }
 }
 
 // Split a "mqtt://host:port" broker URI into host + port for the settings model.
@@ -254,6 +292,9 @@ extern "C" void app_main() {
     // touches the power path.
     diag::init();
 
+    // Activity log (mounts the SPIFFS `storage` partition, loads persisted tail).
+    events::init();
+
     ota::init();
 
     // Onboard RGB-LED warning glyph for shared-compressor conflicts. Failure to
@@ -271,6 +312,23 @@ extern "C" void app_main() {
         return;  // pmic_task keeps running; reboot after provisioning.
     }
     ESP_LOGI(TAG, "WiFi up: %s", wifi::get_ip());
+
+    // Start SNTP so the activity log gets real wall-clock timestamps. Epochs are
+    // stored/served as UTC; the web UI renders them in the browser's local zone,
+    // so no on-device timezone config is needed. Sync happens asynchronously a
+    // few seconds after connect; events logged before then carry ts=0.
+    {
+        esp_sntp_config_t sntp = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+        esp_netif_sntp_init(&sntp);
+    }
+
+    // Record the boot in the activity log, tagging the reset cause.
+    {
+        diag::Snapshot ds = diag::get();
+        std::string boot = std::string("Device started (") + ds.reset_reason +
+                           (ds.last_was_brownout ? ", brownout" : "") + ")";
+        events::log(events::Cat::System, events::Actor::System, boot);
+    }
 
     // We reached the network — the running image is healthy. Confirm it so the
     // bootloader doesn't roll back a freshly-OTA'd slot on the next reset.
@@ -385,6 +443,29 @@ extern "C" void app_main() {
                                                       : -1;
         hvac_mqtt::publish_update_state(u.current_version, u.latest_version,
                                         u.release_url, "", pct);
+
+        // Log OTA lifecycle transitions once each (this callback also fires on
+        // every percent tick, so gate on a change of state).
+        static ota::State last = ota::State::Idle;
+        if (s.state != last) {
+            switch (s.state) {
+                case ota::State::InProgress:
+                    events::log(events::Cat::Ota, events::Actor::System,
+                                "Firmware update started");
+                    break;
+                case ota::State::Success:
+                    events::log(events::Cat::Ota, events::Actor::System,
+                                "Firmware update installed — rebooting");
+                    break;
+                case ota::State::Failed:
+                    events::log(events::Cat::Ota, events::Actor::System,
+                                s.message.empty() ? "Firmware update failed"
+                                    : (std::string("Firmware update failed: ") + s.message).c_str());
+                    break;
+                default: break;
+            }
+            last = s.state;
+        }
     });
     ota::start_update_checker();
 
