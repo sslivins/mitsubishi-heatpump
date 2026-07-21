@@ -35,6 +35,15 @@ std::string device_display_name();
 /// Pass "" to clear it back to the default. Returns ESP_OK on success.
 esp_err_t set_display_name(const char* name);
 
+/// Web-UI temperature display unit. false = °C (default), true = °F. This is a
+/// pure display/input preference for the device web UI: all firmware, MQTT and
+/// Home Assistant setpoint/room values remain in °C. The head is only ever
+/// commanded in °C, so the UI converts and snaps to a supported 0.5 °C step.
+bool temp_unit_fahrenheit();
+
+/// Persist the temperature display unit to NVS and update the cache (no reboot).
+esp_err_t set_temp_unit(bool fahrenheit);
+
 /// Bring up WiFi. Returns ESP_OK once STA is connected with an IP, or
 /// ESP_ERR_NOT_FINISHED when it has fallen back to SoftAP provisioning.
 esp_err_t init();
