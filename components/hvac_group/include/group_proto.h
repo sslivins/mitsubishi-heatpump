@@ -138,6 +138,12 @@ struct MemberObs {
     Demand      demand = Demand::Neutral;   ///< classified from power+mode.
     bool        active_now = false;         ///< operating==true (running now).
     bool        standby = false;            ///< STANDBY+IDLE+!operating (blocked).
+    // Display-only extras for the Zones-tab cards. Never consulted by
+    // evaluate_group — a sentinel of -1000 means "unknown/not reported".
+    float       room_temp   = -1000.f;      ///< current room temp, °C.
+    float       target_temp = -1000.f;      ///< active setpoint, °C.
+    std::string mode_str;                   ///< friendly mode ("COOL"/"OFF"/…).
+    std::string ip;                         ///< resolved IPv4, for the zone link.
 };
 
 /// Overall group status for the computed view.
