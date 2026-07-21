@@ -1165,6 +1165,27 @@ bool resolve_self(hvac_group::Demand target, hvac_group::ResolveStrategy strat,
     return true;
 }
 
+// Apply an EXPLICIT mode command to THIS head — the coordinator, i.e. the head
+// the user (or Home Assistant) directly acted on. Unlike resolve_self (which is
+// conflict *resolution* and deliberately never turns an OFF zone on), this
+// honours the user's literal intent: power on and switch to @p target even when
+// this head was off. The "never disturb an OFF zone" guard in plan_resolution is
+// correct only for PEERS receiving the fanned-out op, not for the origin where
+// the change IS the user's request. Fills @p out_reason: applied / aligned /
+// dwell. Idempotent (already on and in @p target) is an "aligned" no-op that
+// does not consume the dwell window.
+bool apply_self_command(hvac_group::Demand target, std::string& out_reason) {
+    hvac_group::Demand demand; bool power_on;
+    self_view(demand, power_on);
+    if (power_on && demand == target) { out_reason = "aligned"; return false; }
+    if (!dwell_ok()) { out_reason = "dwell"; return false; }
+    // apply(Mode, ...) powers the unit on and sets the mode (see on_mqtt_command).
+    apply(hvac_mqtt::Command::Kind::Mode, hvac_group::demand_str(target));
+    mark_op();
+    out_reason = "applied";
+    return true;
+}
+
 // Coordinator side: send one signed resolution op to a single peer over
 // POST /api/group/sync. @p reqbody is the exact JSON that was signed. Returns a
 // machine token: the peer's own reason (applied/aligned/stale/dwell) on a
@@ -1775,9 +1796,13 @@ bool coordinate_group_to(hvac_group::Demand target, hvac_group::ResolveStrategy 
     hvac_group::GroupConfig g = hvac_group::get();
     uint64_t op_id = hvac_group::issue_op_id();
 
-    // Apply to self first (we are the origin, so no accept_op_id needed).
+    // Apply to self first (we are the origin, so no accept_op_id needed). The
+    // origin is the head the user/HA explicitly commanded to `target`, so honour
+    // it literally — power on and switch — rather than running conflict
+    // resolution (which would leave an OFF origin off). Peers below still go
+    // through plan_resolution and are never force-powered-on.
     std::string self_reason;
-    resolve_self(target, strat, self_reason);
+    apply_self_command(target, self_reason);
     if (self_reason_out) *self_reason_out = self_reason;
 
     const char* strat_tok = (strat == hvac_group::ResolveStrategy::OffConflicting)
