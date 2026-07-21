@@ -346,7 +346,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
       </svg>
       <div class="dial-center">
         <div class="dc-mode" id="dialMode">--</div>
-        <div class="dc-temp"><span id="setTemp">--</span><span class="dc-unit">°C</span></div>
+        <div class="dc-temp"><span id="setTemp">--</span><span class="dc-unit" id="setUnit">°C</span></div>
         <div class="dc-room"><span id="roomTemp">--</span>° room</div>
       </div>
       <button class="dial-btn dec" id="tDec" onclick="bumpTemp(-0.5)" aria-label="Lower setpoint">−</button>
@@ -507,6 +507,16 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
       <div class="stat"><div class="k">Min input</div><div class="v" id="vinMin">--</div></div>
       <div class="stat"><div class="k">Sags</div><div class="v" id="vinSags">--</div></div>
     </div>
+  </div>
+
+  <div class="card" data-grp="settings">
+    <h2>Display</h2>
+    <div class="row">
+      <label>Show temperatures in &deg;F</label>
+      <div class="toggle"><input type="checkbox" id="dispF" onchange="saveDisplayUnit()"><span class="slider" onclick="document.getElementById('dispF').click()"></span></div>
+    </div>
+    <div class="sub" style="margin:-4px 0 4px">Applies to this web UI only. Home Assistant and MQTT always use &deg;C; the head is always commanded in &deg;C.</div>
+    <div id="dispMsg" class="status hidden" style="margin:10px 0"></div>
   </div>
 
   <div class="card" data-grp="settings">
@@ -850,6 +860,7 @@ async function refresh(){
 
     if(!userEditing){
       const c=await (await fetch('/api/settings')).json();
+      if(c.temp_unit){TUNIT=c.temp_unit;syncUnitToggle();}
       if(confirmField('power',c.power)) climate.power=(c.power==='ON');
       if(confirmField('mode',c.mode)) climate.mode=c.mode||climate.mode;
       if(c.temperature!=null&&confirmField('temperature',c.temperature)) climate.temp=c.temperature;
@@ -863,10 +874,10 @@ async function refresh(){
       const conn=!!c.connected;
       $('dgOp').textContent=conn?(c.operating?'yes':'no'):'--';
       $('dgComp').textContent=(conn&&c.compressorFrequency!=null)?(c.compressorFrequency+' Hz'):'--';
-      $('dgRoom').textContent=(conn&&c.roomTemperature!=null&&c.roomTemperature>0)?(c.roomTemperature.toFixed(1)+' °C'):'--';
+      $('dgRoom').textContent=(conn&&c.roomTemperature!=null&&c.roomTemperature>0)?(fmtTemp(c.roomTemperature)+' '+unitSym()):'--';
       // Extended telemetry — each field only present in the payload when the
       // unit actually reported it, so absence renders as "--".
-      $('dgOut').textContent=(conn&&c.outsideTemp!=null)?(c.outsideTemp.toFixed(1)+' °C'):'--';
+      $('dgOut').textContent=(conn&&c.outsideTemp!=null)?(fmtTemp(c.outsideTemp)+' '+unitSym()):'--';
       $('dgPow').textContent=(conn&&c.inputPowerW!=null)?(c.inputPowerW+' W'):'--';
       $('dgEng').textContent=(conn&&c.energyKwh!=null)?(c.energyKwh.toFixed(1)+' kWh'):'--';
       $('dgRun').textContent=(conn&&c.runtimeHours!=null)?(Math.round(c.runtimeHours)+' h'):'--';
@@ -884,6 +895,39 @@ async function refresh(){
 // ── Climate dial ──────────────────────────────────────────────────────
 let climate={power:false,mode:'HEAT',temp:21,room:null,operating:false};
 const T_MIN=16,T_MAX=31,A_START=225,A_SWEEP=270,DR=80,DC=100;
+// Temperature display unit. Internal setpoint/room values are ALWAYS °C at the
+// head's 0.5 °C granularity; this only changes how they're shown/entered.
+let TUNIT='C';
+function isF(){return TUNIT==='F';}
+function cToF(c){return c*9/5+32;}
+function fToC(f){return (f-32)*5/9;}
+function snapC(c){return Math.max(T_MIN,Math.min(T_MAX,Math.round(c*2)/2));}
+function unitSym(){return isF()?'°F':'°C';}
+// Format a °C value for display: whole °F, or one-decimal °C. Returns '--' for null.
+function fmtTemp(c){return c==null?'--':(isF()?String(Math.round(cToF(c))):Number(c).toFixed(1));}
+function syncUnitToggle(){const t=$('dispF');if(t)t.checked=isF();}
+// Convert any "NN(.N)°C" occurrences in a pre-formatted string (e.g. an activity
+// log message like "Target set to 22.5°C") to whole °F when in °F mode. Values
+// with no number before °C (e.g. "Display set to °C") are left untouched.
+function convTempStr(m){
+  if(!isF()||!m)return m;
+  return m.replace(/(-?\d+(?:\.\d+)?)\s*°C/g,(_,n)=>Math.round(cToF(parseFloat(n)))+'°F');
+}
+async function saveDisplayUnit(){
+  const want=$('dispF').checked?'F':'C', msg=$('dispMsg');
+  const fail=t=>{msg.textContent=t;msg.className='status err';msg.classList.remove('hidden');$('dispF').checked=isF();};
+  try{
+    const r=await fetch('/api/device',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({temp_unit:want})});
+    if(r.status===401||r.status===403){ $('dispF').checked=isF(); loadAuth(); return; }
+    if(!r.ok){ fail('Save failed'); return; }
+    const d=await r.json();
+    TUNIT=d.temp_unit||want;
+    syncUnitToggle(); renderClimate();
+    if(actData)renderActivity();
+    msg.classList.add('hidden');
+  }catch(e){ fail('Save failed'); }
+}
 const MODE_COLOR={HEAT:'#ff7b29',COOL:'#3b9bff',AUTO:'#3fb950',DRY:'#9aa4ad',FAN:'#9aa4ad'};
 function tToAngle(t){return A_START+((t-T_MIN)/(T_MAX-T_MIN))*A_SWEEP;}
 function polar(aDeg,r){const a=aDeg*Math.PI/180;return [DC+r*Math.sin(a),DC-r*Math.cos(a)];}
@@ -897,8 +941,9 @@ function arc(t0,t1){
 }
 function renderClimate(){
   const t=Math.max(T_MIN,Math.min(T_MAX,climate.temp||21));
-  $('setTemp').textContent=climate.temp!=null?Number(t).toFixed(1):'--';
-  $('roomTemp').textContent=climate.room!=null?climate.room.toFixed(1):'--';
+  $('setTemp').textContent=climate.temp!=null?fmtTemp(t):'--';
+  $('setUnit').textContent=unitSym();
+  $('roomTemp').textContent=fmtTemp(climate.room);
   const color=climate.power?(MODE_COLOR[climate.mode]||'#9aa4ad'):getComputedStyle(document.documentElement).getPropertyValue('--dial-fill').trim();
   $('dialFill').setAttribute('d',arc(T_MIN,t));
   $('dialFill').style.stroke=color;
@@ -967,9 +1012,16 @@ async function setMode(m){
 }
 function bumpTemp(d){
   if(!climate.power)return;
-  let t=parseFloat($('setTemp').textContent);if(isNaN(t))t=21;
-  t=Math.max(T_MIN,Math.min(T_MAX,Math.round((t+d)*2)/2));
-  climate.temp=t;renderClimate();post({temperature:t});
+  let c=(climate.temp!=null)?climate.temp:21;
+  if(isF()){
+    // Step by a whole °F, then snap to the nearest supported 0.5 °C. Driving by
+    // target-°F (not a fixed °C delta) keeps every press moving the display by
+    // exactly 1 °F and skips the rare two-°C-to-one-°F duplicate.
+    c=snapC(fToC(Math.round(cToF(c))+(d>0?1:-1)));
+  }else{
+    c=snapC(c+d);
+  }
+  climate.temp=c;renderClimate();post({temperature:c});
 }
 
 // Drag / tap on the dial to set the temperature.
@@ -1988,7 +2040,7 @@ function renderActivity(){
     ico.textContent=ACT_ICONS[ev.cat]||'\u2139\uFE0F';
     const main=document.createElement('div'); main.className='act-main';
     const msg=document.createElement('div'); msg.className='act-msg';
-    msg.textContent=ev.msg||'';               // trusted, but textContent regardless
+    msg.textContent=convTempStr(ev.msg||'');   // trusted, but textContent regardless
     const meta=document.createElement('div'); meta.className='act-meta';
     meta.appendChild(document.createTextNode(actTime(ev,now)));
     const who=actWho(ev);

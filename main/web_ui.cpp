@@ -310,6 +310,8 @@ esp_err_t handle_get_settings(httpd_req_t* req) {
     cJSON_AddStringToObject(root, "vane", st.vane.c_str());
     cJSON_AddStringToObject(root, "wideVane", st.wideVane.c_str());
     cJSON_AddBoolToObject(root, "connected", st.connected);
+    cJSON_AddStringToObject(root, "temp_unit",
+                            wifi::temp_unit_fahrenheit() ? "F" : "C");
     cJSON_AddNumberToObject(root, "roomTemperature", sta.roomTemperature);
     cJSON_AddBoolToObject(root, "operating", sta.operating);
     cJSON_AddNumberToObject(root, "compressorFrequency", sta.compressorFrequency);
@@ -710,8 +712,21 @@ esp_err_t handle_device_post(httpd_req_t* req) {
         return ESP_FAIL;
     }
     const cJSON* v = cJSON_GetObjectItem(json, "name");
-    const char* name = (v && cJSON_IsString(v)) ? v->valuestring : "";
-    esp_err_t err = wifi::set_display_name(name);
+    esp_err_t err = ESP_OK;
+    bool name_changed = false, unit_changed = false;
+    // Partial update: only touch a field when its key is present, so a
+    // temp_unit-only POST doesn't clear the display name (and vice versa).
+    if (v && cJSON_IsString(v)) {
+        err = wifi::set_display_name(v->valuestring);
+        name_changed = (err == ESP_OK);
+    }
+    const cJSON* vu = cJSON_GetObjectItem(json, "temp_unit");
+    if (err == ESP_OK && vu && cJSON_IsString(vu) && vu->valuestring) {
+        char c0 = vu->valuestring[0];
+        bool f = (c0 == 'F' || c0 == 'f');
+        err = wifi::set_temp_unit(f);
+        unit_changed = (err == ESP_OK);
+    }
     cJSON_Delete(json);
     if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS write failed");
@@ -719,10 +734,18 @@ esp_err_t handle_device_post(httpd_req_t* req) {
     }
     // Propagate this head's (canonical) display name into the group replica so
     // peers learn it via gossip. No-op when standalone or unchanged.
-    hvac_group::note_self_name(wifi::device_display_name());
-    // Echo the canonical (sanitised) value so the UI can update in place.
+    if (name_changed) hvac_group::note_self_name(wifi::device_display_name());
+    if (unit_changed) {
+        std::string who = web_actor_name(req);
+        std::string m = std::string("Display set to ") +
+                        (wifi::temp_unit_fahrenheit() ? "\xC2\xB0""F" : "\xC2\xB0""C");
+        events::log(events::Cat::System, events::Actor::WebUI, m.c_str(), who.c_str());
+    }
+    // Echo the canonical (sanitised) values so the UI can update in place.
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "name", wifi::device_display_name().c_str());
+    cJSON_AddStringToObject(root, "temp_unit",
+                            wifi::temp_unit_fahrenheit() ? "F" : "C");
     char* str = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, str);

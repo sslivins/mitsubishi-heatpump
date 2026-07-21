@@ -59,6 +59,11 @@ uint16_t s_scan_count = 0;
 constexpr char kDeviceNvsNs[] = "device";
 SemaphoreHandle_t s_name_mtx = nullptr;
 std::string       s_name;
+// Web-UI temperature display preference: false = °C (default), true = °F. A pure
+// display/input choice for the device web UI — firmware, MQTT and Home Assistant
+// values are always °C. Guarded by s_name_mtx (same "device" namespace, both low
+// contention).
+bool              s_temp_f = false;
 
 void load_name() {
     char buf[64] = {0};
@@ -66,6 +71,8 @@ void load_name() {
     if (nvs_open(kDeviceNvsNs, NVS_READONLY, &h) == ESP_OK) {
         size_t len = sizeof(buf);
         if (nvs_get_str(h, "name", buf, &len) == ESP_OK) s_name = buf;
+        uint8_t tf = 0;
+        if (nvs_get_u8(h, "tunit", &tf) == ESP_OK) s_temp_f = (tf != 0);
         nvs_close(h);
     }
 }
@@ -415,6 +422,28 @@ esp_err_t set_display_name(const char* name) {
     xSemaphoreTake(s_name_mtx, portMAX_DELAY);
     s_name = n;
     xSemaphoreGive(s_name_mtx);
+    return ESP_OK;
+}
+
+bool temp_unit_fahrenheit() {
+    if (!s_name_mtx) return s_temp_f;
+    xSemaphoreTake(s_name_mtx, portMAX_DELAY);
+    bool v = s_temp_f;
+    xSemaphoreGive(s_name_mtx);
+    return v;
+}
+
+esp_err_t set_temp_unit(bool fahrenheit) {
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(kDeviceNvsNs, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(h, "tunit", fahrenheit ? 1 : 0);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) return err;  // keep the old cached value on failure
+    if (s_name_mtx) xSemaphoreTake(s_name_mtx, portMAX_DELAY);
+    s_temp_f = fahrenheit;
+    if (s_name_mtx) xSemaphoreGive(s_name_mtx);
     return ESP_OK;
 }
 
