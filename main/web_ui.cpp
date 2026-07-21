@@ -10,8 +10,10 @@
 #include "status_led.h"
 
 #include <cstring>
+#include <strings.h>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "esp_log.h"
 #include "esp_http_server.h"
@@ -1683,6 +1685,51 @@ esp_err_t handle_group_sync(httpd_req_t* req) {
     return r;
 }
 
+// Coordinate the whole group onto `target` (HEAT/COOL): apply the resolution to
+// this head, then send the same signed, op_id-ordered op to every enrolled peer
+// via /api/group/sync. When @p results is non-null, a {uid,result} object is
+// appended per peer; when @p self_reason_out is non-null it receives this head's
+// own result token. Returns true iff every member converged (self + all peers).
+// Shared by the /api/group/resolve HTTP handler and the MQTT (Home Assistant)
+// mode-command path so both coordinate identically.
+bool coordinate_group_to(hvac_group::Demand target, hvac_group::ResolveStrategy strat,
+                         cJSON* results, std::string* self_reason_out) {
+    hvac_group::GroupConfig g = hvac_group::get();
+    uint64_t op_id = hvac_group::issue_op_id();
+
+    // Apply to self first (we are the origin, so no accept_op_id needed).
+    std::string self_reason;
+    resolve_self(target, strat, self_reason);
+    if (self_reason_out) *self_reason_out = self_reason;
+
+    const char* strat_tok = (strat == hvac_group::ResolveStrategy::OffConflicting)
+                                ? "off_conflicting" : "flip";
+
+    // Build the exact op body once, then sign+send it to each peer.
+    cJSON* opj = cJSON_CreateObject();
+    cJSON_AddNumberToObject(opj, "op_id", (double)op_id);
+    cJSON_AddStringToObject(opj, "target_mode", hvac_group::demand_str(target));
+    cJSON_AddStringToObject(opj, "strategy", strat_tok);
+    cJSON_AddStringToObject(opj, "coordinator_uid", hvac_group::self_uid().c_str());
+    char* opstr = cJSON_PrintUnformatted(opj);
+    cJSON_Delete(opj);
+    std::string opbody = opstr ? opstr : "";
+    if (opstr) cJSON_free(opstr);
+
+    bool all_ok = sync_result_ok(self_reason);
+    for (const auto& uid : g.peers) {
+        std::string r = opbody.empty() ? std::string("error") : sync_peer(uid, opbody);
+        if (!sync_result_ok(r)) all_ok = false;
+        if (results) {
+            cJSON* jm = cJSON_CreateObject();
+            cJSON_AddStringToObject(jm, "uid", uid.c_str());
+            cJSON_AddStringToObject(jm, "result", r.c_str());
+            cJSON_AddItemToArray(results, jm);
+        }
+    }
+    return all_ok;
+}
+
 // ── POST /api/group/resolve ─ coordinate a group mode resolution (admin) ─
 // Body: {"target_mode":"HEAT|COOL","strategy":"flip|off_conflicting"}
 // This head becomes the coordinator for one op: it allocates a monotonic op_id,
@@ -1716,34 +1763,11 @@ esp_err_t handle_group_resolve(httpd_req_t* req) {
     const char* strat_tok = (strat == hvac_group::ResolveStrategy::OffConflicting)
                                 ? "off_conflicting" : "flip";
 
-    hvac_group::GroupConfig g = hvac_group::get();
-    uint64_t op_id = hvac_group::issue_op_id();
-
-    // Apply to self first (we are the origin, so no accept_op_id needed).
+    // Coordinate self + all peers through the shared helper.
     std::string self_reason;
-    resolve_self(target, strat, self_reason);
-
-    // Build the exact op body once, then sign+send it to each peer.
-    cJSON* opj = cJSON_CreateObject();
-    cJSON_AddNumberToObject(opj, "op_id", (double)op_id);
-    cJSON_AddStringToObject(opj, "target_mode", hvac_group::demand_str(target));
-    cJSON_AddStringToObject(opj, "strategy", strat_tok);
-    cJSON_AddStringToObject(opj, "coordinator_uid", hvac_group::self_uid().c_str());
-    char* opstr = cJSON_PrintUnformatted(opj);
-    cJSON_Delete(opj);
-    std::string opbody = opstr ? opstr : "";
-    if (opstr) cJSON_free(opstr);
-
-    bool all_ok = sync_result_ok(self_reason);
     cJSON* results = cJSON_CreateArray();
-    for (const auto& uid : g.peers) {
-        std::string r = opbody.empty() ? std::string("error") : sync_peer(uid, opbody);
-        if (!sync_result_ok(r)) all_ok = false;
-        cJSON* jm = cJSON_CreateObject();
-        cJSON_AddStringToObject(jm, "uid", uid.c_str());
-        cJSON_AddStringToObject(jm, "result", r.c_str());
-        cJSON_AddItemToArray(results, jm);
-    }
+    bool all_ok = coordinate_group_to(target, strat, results, &self_reason);
+    uint64_t op_id = hvac_group::last_op_id();
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "status", all_ok ? "ok" : "partial");
@@ -2104,6 +2128,38 @@ esp_err_t handle_options(httpd_req_t* req) {
 }
 
 }  // namespace
+
+// Group-aware handling of a climate mode command that arrived over MQTT (Home
+// Assistant). HA offers no confirm dialog, so a Heat/Cool command on a grouped
+// head that would conflict with a peer is promoted to a whole-group switch —
+// the same coordinated resolve the web UI runs after its "switch all zones"
+// confirm. Mirrors the web UI's needsGroupSwitch(): promote only when a KNOWN
+// peer holds the opposite mode (or the unit is inferred locked the other way);
+// otherwise the caller applies the command locally as usual. Returns true if it
+// was handled as a group switch.
+bool try_group_mode_command(const std::string& mode) {
+    hvac_group::Demand target;
+    if (strcasecmp(mode.c_str(), "heat") == 0)      target = hvac_group::Demand::Heat;
+    else if (strcasecmp(mode.c_str(), "cool") == 0) target = hvac_group::Demand::Cool;
+    else return false;                       // only HEAT/COOL can conflict
+    if (!hvac_group::in_group()) return false;
+
+    std::vector<hvac_group::MemberObs> members;
+    hvac_group::GroupView view = compute_group_view(&members);
+    const hvac_group::Demand opp = (target == hvac_group::Demand::Heat)
+                                       ? hvac_group::Demand::Cool
+                                       : hvac_group::Demand::Heat;
+    bool conflict = (view.locked_mode == opp);
+    for (size_t i = 1; !conflict && i < members.size(); ++i)
+        conflict = (members[i].state == hvac_group::MemberState::Known &&
+                    members[i].demand == opp);
+    if (!conflict) return false;             // no conflict → apply locally
+
+    ESP_LOGI(TAG, "HA mode '%s' conflicts on grouped head -> switching all zones to %s",
+             mode.c_str(), hvac_group::demand_str(target));
+    coordinate_group_to(target, hvac_group::ResolveStrategy::FlipMode, nullptr, nullptr);
+    return true;
+}
 
 esp_err_t init(const Hooks& hooks) {
     s_hooks = hooks;

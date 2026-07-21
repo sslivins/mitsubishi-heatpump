@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
 
 #include "cn105.h"
 #include "hvac_mqtt.h"
@@ -70,5 +71,13 @@ struct Hooks {
 
 /// Start the HTTP server. Call once, after wifi::init() reports CONNECTED.
 esp_err_t init(const Hooks& hooks);
+
+/// Group-aware handling of a climate mode command from MQTT (Home Assistant).
+/// A Heat/Cool command on a grouped head that would conflict with a peer is
+/// promoted to a whole-group switch (the coordinated resolve the web UI runs
+/// after its "switch all zones" confirm), since HA cannot show a confirmation.
+/// Returns true if handled as a group switch; false if the caller should apply
+/// the command locally as usual (not grouped, no conflict, or not Heat/Cool).
+bool try_group_mode_command(const std::string& mode);
 
 }  // namespace web_ui
