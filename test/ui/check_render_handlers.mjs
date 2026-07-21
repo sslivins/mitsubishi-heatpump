@@ -50,8 +50,12 @@ function extractFn(src, name) {
 
 let memberRow;
 try {
-  const ctx = vm.createContext({});
-  vm.runInContext(extractFn(script, 'gEsc') + '\n' + extractFn(script, 'memberRow'), ctx);
+  const ctx = vm.createContext({ TUNIT: 'C' });
+  // memberRow now also calls modeCap/fmtTemp/unitSym (+ isF/cToF that fmtTemp
+  // uses). Slice them all out of the inline script so the test drives the real
+  // render path, not a stub.
+  const helpers = ['gEsc', 'isF', 'cToF', 'unitSym', 'fmtTemp', 'modeCap', 'memberRow'];
+  vm.runInContext(helpers.map(h => extractFn(script, h)).join('\n'), ctx);
   // Expose for calling.
   memberRow = vm.runInContext('memberRow', ctx);
 } catch (e) {
@@ -78,8 +82,11 @@ for (const name of HOSTILE) {
   for (const isPeer of [true, false]) {
     let out;
     try {
-      out = memberRow(name, 'HEAT', isPeer ? 'known' : 'selfdot',
-                      isPeer ? '' : 'you', false, 'abcd', isPeer);
+      out = memberRow({
+        name, mode: 'HEAT', dotcls: isPeer ? 'known' : 'selfdot',
+        tag: isPeer ? '' : 'you', isLock: false, uid: 'abcd', isPeer,
+        room: 21.5, target: 22, url: isPeer ? 'http://192.168.1.9/' : null,
+      });
     } catch (e) {
       fail(`memberRow threw for name=${JSON.stringify(name)} isPeer=${isPeer}: ${e.message}`);
       continue;

@@ -830,6 +830,10 @@ esp_err_t handle_group_state(httpd_req_t* req) {
     cJSON_AddBoolToObject(root, "operating", sta.operating);
     cJSON_AddStringToObject(root, "subMode", sta.subMode.c_str());
     cJSON_AddStringToObject(root, "stage", sta.stage.c_str());
+    // Display-only extras consumed by the poller's Zones-tab cards (pv-compatible:
+    // an older peer simply omits them and the card renders "--").
+    cJSON_AddNumberToObject(root, "roomTemp", sta.roomTemperature);
+    cJSON_AddNumberToObject(root, "targetTemp", st.temperature);
     cJSON_AddNumberToObject(root, "pv", hvac_group::kProtocolVersion);
     // Ride the replicated group state (label + names + membership CRDT) on the
     // snapshot so the poller can anti-entropy-merge it (Phase 6 gossip).
@@ -946,6 +950,18 @@ bool poll_peer(const std::string& uid, hvac_group::MemberObs& out, bool& incompa
                         incompatible = true;
                         out.state = hvac_group::MemberState::Incompatible;
                     }
+                    // Display-only extras for the Zones-tab cards. observe() has
+                    // just overwritten `out`, so fill these after it.
+                    const cJSON* jrt = cJSON_GetObjectItem(j, "roomTemp");
+                    const cJSON* jtt = cJSON_GetObjectItem(j, "targetTemp");
+                    out.room_temp   = (jrt && cJSON_IsNumber(jrt)) ? (float)jrt->valuedouble : -1000.f;
+                    out.target_temp = (jtt && cJSON_IsNumber(jtt)) ? (float)jtt->valuedouble : -1000.f;
+                    out.ip          = ip;
+                    {
+                        std::string pwr = (jpwr  && cJSON_IsString(jpwr))  ? jpwr->valuestring  : "";
+                        std::string md  = (jmode && cJSON_IsString(jmode)) ? jmode->valuestring : "";
+                        out.mode_str    = (pwr == "OFF" || pwr.empty()) ? std::string("OFF") : md;
+                    }
                     // Anti-entropy: merge the peer's replicated group state (label
                     // + names + membership) into ours. cJSON_PrintUnformatted the
                     // sub-object back to a string for the device-side merge.
@@ -1042,6 +1058,10 @@ hvac_group::GroupView compute_group_view(std::vector<hvac_group::MemberObs>* out
     // signal — the authoritative conflict indicator (see design doc).
     self_obs.standby    = (sta.subMode == "STANDBY") && (sta.stage == "IDLE") &&
                           !sta.operating;
+    self_obs.room_temp   = sta.roomTemperature;
+    self_obs.target_temp = st.temperature;
+    self_obs.mode_str    = (st.power == "OFF") ? std::string("OFF") : st.mode;
+    self_obs.ip          = wifi::get_ip();
 
     std::vector<hvac_group::MemberObs> members;
     members.push_back(self_obs);
@@ -1310,6 +1330,10 @@ esp_err_t handle_group_get(httpd_req_t* req) {
     cJSON_AddStringToObject(self, "configured_demand", hvac_group::demand_str(self_obs.demand));
     cJSON_AddBoolToObject(self, "operating", self_obs.active_now);
     cJSON_AddBoolToObject(self, "standby", self_obs.standby);
+    cJSON_AddStringToObject(self, "mode", self_obs.mode_str.c_str());
+    if (self_obs.room_temp   > -900.f) cJSON_AddNumberToObject(self, "roomTemp", self_obs.room_temp);
+    if (self_obs.target_temp > -900.f) cJSON_AddNumberToObject(self, "targetTemp", self_obs.target_temp);
+    if (!self_obs.ip.empty())          cJSON_AddStringToObject(self, "ip", self_obs.ip.c_str());
     cJSON_AddItemToObject(root, "self", self);
 
     cJSON* jmembers = cJSON_CreateArray();
@@ -1322,8 +1346,13 @@ esp_err_t handle_group_get(httpd_req_t* req) {
             m.state == hvac_group::MemberState::Known        ? "known"
           : m.state == hvac_group::MemberState::Incompatible ? "incompatible"
                                                              : "unknown");
-        if (m.state == hvac_group::MemberState::Known)
+        if (m.state == hvac_group::MemberState::Known) {
             cJSON_AddStringToObject(jm, "configured_demand", hvac_group::demand_str(m.demand));
+            if (!m.mode_str.empty())        cJSON_AddStringToObject(jm, "mode", m.mode_str.c_str());
+            if (m.room_temp   > -900.f)     cJSON_AddNumberToObject(jm, "roomTemp", m.room_temp);
+            if (m.target_temp > -900.f)     cJSON_AddNumberToObject(jm, "targetTemp", m.target_temp);
+        }
+        if (!m.ip.empty()) cJSON_AddStringToObject(jm, "ip", m.ip.c_str());
         cJSON_AddItemToArray(jmembers, jm);
     }
     cJSON_AddItemToObject(root, "members", jmembers);

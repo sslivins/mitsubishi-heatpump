@@ -218,6 +218,15 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
 .gbanner.info{background:var(--info-bg);border:1px solid var(--info-border);color:var(--blue)}
 .gmember{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--border)}
 .gmember:first-child{border-top:none}
+.gmember[data-gurl]{cursor:pointer;border-radius:8px;margin:0 -8px;padding-left:8px;padding-right:8px}
+.gmember[data-gurl]:hover{background:var(--border)}
+.gmcol{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.gmtop{display:flex;align-items:center;gap:8px;min-width:0}
+.gmtop .gname{flex:0 1 auto}
+.gmtop .glock{margin-left:auto}
+.gmstats{display:flex;gap:12px;flex-wrap:wrap}
+.gmstat{font-size:.76em;color:var(--fg-3)}
+.gmstat b{color:var(--fg);font-weight:600}
 .gdot{width:9px;height:9px;border-radius:50%;background:var(--dot-off);flex:0 0 auto}
 .gdot.known{background:var(--green)}
 .gdot.unknown{background:var(--orange)}
@@ -1659,24 +1668,39 @@ function groupStatusText(s){
   return ({ok:'In sync',standalone:'Standalone',pending_conflict:'Conflict (pending)',
     conflict:'Conflict',indeterminate:'Unconfirmed'})[s]||s||'—';
 }
-function memberRow(name,demand,dotcls,tag,isLock,uid,isPeer){
+function memberRow(o){
   // Removing any room from the group is one consistent gesture: peers get an
   // ✕, this head ("you") gets a labelled Leave button in the same trailing
   // position — bigger touch target, self-worded confirm. One name per head.
   let ctrls='';
-  if(uid && isPeer){
+  if(o.uid && o.isPeer){
     ctrls='<span class="gmctl"><button class="gmbtn" data-gact="remove" '+
-      'data-guid="'+gEsc(uid)+'" data-gname="'+gEsc(name)+'" '+
-      'title="Remove from group" aria-label="Remove '+gEsc(name)+' from group">\u2715</button></span>';
-  } else if(uid && !isPeer){
+      'data-guid="'+gEsc(o.uid)+'" data-gname="'+gEsc(o.name)+'" '+
+      'title="Remove from group" aria-label="Remove '+gEsc(o.name)+' from group">\u2715</button></span>';
+  } else if(o.uid && !o.isPeer){
     ctrls='<span class="gmctl"><button class="gmbtn leave" data-gact="leave" '+
       'title="Leave the group" aria-label="Leave the group">Leave</button></span>';
   }
-  return '<div class="gmember">'+
-    '<span class="gdot '+dotcls+'"></span>'+
-    '<span class="gname">'+gEsc(name)+(tag?' <span class="gmode">('+gEsc(tag)+')</span>':'')+'</span>'+
-    (isLock?'<span class="glock">holds unit</span>':'')+
-    '<span class="gmode">'+gEsc(demand||'—')+'</span>'+
+  const nameHtml='<span class="gname">'+gEsc(o.name)+(o.tag?' <span class="gmode">('+gEsc(o.tag)+')</span>':'')+'</span>';
+  const lockHtml=o.isLock?'<span class="glock">holds unit</span>':'';
+  // Stats line: mode + current room temp + target. fmtTemp is unit-aware
+  // (°F/°C) and renders '--' for a missing value (e.g. an offline peer).
+  let stats='';
+  const parts=[];
+  if(o.mode) parts.push('<span class="gmstat"><b>'+gEsc(modeCap(o.mode))+'</b></span>');
+  if(o.room!=null) parts.push('<span class="gmstat">Now <b>'+fmtTemp(o.room)+unitSym()+'</b></span>');
+  if(o.target!=null) parts.push('<span class="gmstat">Set <b>'+fmtTemp(o.target)+unitSym()+'</b></span>');
+  if(parts.length) stats='<div class="gmstats">'+parts.join('')+'</div>';
+  // A whole card is a link to that zone's own UI. Buttons live inside and are
+  // handled first by the delegated listener (so a tap on ✕/Leave never
+  // navigates). data-* only — never interpolate names into an onclick.
+  const urlAttr=o.url?(' data-gurl="'+gEsc(o.url)+'"'):'';
+  return '<div class="gmember"'+urlAttr+'>'+
+    '<span class="gdot '+o.dotcls+'"></span>'+
+    '<div class="gmcol">'+
+      '<div class="gmtop">'+nameHtml+lockHtml+'</div>'+
+      stats+
+    '</div>'+
     ctrls+
   '</div>';
 }
@@ -1720,17 +1744,21 @@ function renderGroupPanel(g){
   // flickers. So gate the badge on an actual conflict.
   const inConflict=(g.status==='conflict'||g.status==='pending_conflict');
   const lockMatch=(nm,uid)=>inConflict&&g.locked_by&&(g.locked_by===nm||g.locked_by===uid);
-  const rows=[ memberRow(self.name||self.uid,self.configured_demand,'selfdot','you',
-      lockMatch(self.name,self.uid),self.uid,false) ];
+  const rows=[ memberRow({
+      name:self.name||self.uid, dotcls:'selfdot', tag:'you',
+      isLock:lockMatch(self.name,self.uid), uid:self.uid, isPeer:false,
+      mode:self.mode, room:self.roomTemp, target:self.targetTemp, url:null }) ];
   (g.members||[]).forEach(m=>{
     const known=(m.state==='known');
     // An unreachable peer (no fresh signed poll within ~45s) comes back as
     // state!=='known' — surface that plainly as "offline" so it's obvious a
     // zone dropped off, rather than the ambiguous "unknown".
     const tag=known?'':(m.state==='incompatible'?'incompatible':'offline');
-    rows.push(memberRow(m.name||m.uid, known?m.configured_demand:null,
-      known?'known':'unknown', tag,
-      lockMatch(m.name,m.uid),m.uid,true));
+    rows.push(memberRow({
+      name:m.name||m.uid, dotcls:known?'known':'unknown', tag:tag,
+      isLock:lockMatch(m.name,m.uid), uid:m.uid, isPeer:true,
+      mode:known?m.mode:null, room:known?m.roomTemp:null, target:known?m.targetTemp:null,
+      url:m.ip?('http://'+m.ip+'/'):null }));
   });
   $('gMembers').innerHTML=rows.join('');
   wireMemberCtrls();
@@ -1744,10 +1772,15 @@ function wireMemberCtrls(){
   if(memberCtrlsWired) return;
   const box=$('gMembers'); if(!box) return;
   box.addEventListener('click',e=>{
-    const btn=e.target.closest('button[data-gact]'); if(!btn) return;
-    const act=btn.dataset.gact;
-    if(act==='leave'){ groupLeave(); }
-    else if(act==='remove'){ groupRemoveMember(btn.dataset.guid, btn.dataset.gname); }
+    const btn=e.target.closest('button[data-gact]');
+    if(btn){
+      const act=btn.dataset.gact;
+      if(act==='leave'){ groupLeave(); }
+      else if(act==='remove'){ groupRemoveMember(btn.dataset.guid, btn.dataset.gname); }
+      return;  // a button tap never also navigates the card
+    }
+    const card=e.target.closest('.gmember[data-gurl]');
+    if(card && card.dataset.gurl){ window.open(card.dataset.gurl,'_blank','noopener'); }
   });
   memberCtrlsWired=true;
 }
