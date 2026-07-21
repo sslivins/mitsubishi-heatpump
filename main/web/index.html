@@ -159,6 +159,15 @@ cursor:pointer;user-select:none;transition:.15s}
 .tab.active{background:var(--accent);color:#fff}
 .panel{display:none}
 .panel.active{display:block}
+/* Status-tab section jump bar: sticky chips that scroll to each card. */
+.secnav{position:sticky;top:6px;z-index:5;display:flex;gap:6px;overflow-x:auto;
+  background:var(--bg);padding:8px 0;margin-bottom:8px}
+.secnav::-webkit-scrollbar{display:none}
+.secnav button{flex:0 0 auto;background:var(--surface);border:1px solid var(--border);
+  color:var(--fg-3);border-radius:20px;padding:7px 14px;font-size:.78em;white-space:nowrap;
+  cursor:pointer;transition:.15s}
+.secnav button:hover{color:var(--fg);border-color:var(--fg-3)}
+#panel-system .card[id]{scroll-margin-top:58px}
 .overlay{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;
 justify-content:center;padding:16px;z-index:100}
 .overlay .card{width:100%;max-width:360px;margin:0}
@@ -492,8 +501,14 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
   </div><!-- /panel-group -->
 
   <div class="panel" id="panel-system">
-  <div class="card" data-grp="status">
-    <h2>System</h2>
+  <div class="secnav" data-grp="status">
+    <button onclick="jumpTo('sec-controller')">Controller</button>
+    <button onclick="jumpTo('sec-power')">Power</button>
+    <button onclick="jumpTo('sec-heatpump')">Heat pump</button>
+    <button onclick="jumpTo('sec-activity')">Activity</button>
+  </div>
+  <div class="card" data-grp="status" id="sec-controller">
+    <h2>Controller</h2>
     <div class="grid">
       <div class="stat"><div class="k">Firmware</div><div class="v" id="ver">--</div></div>
       <div class="stat"><div class="k">IP</div><div class="v" id="ip">--</div></div>
@@ -504,8 +519,8 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     </div>
   </div>
 
-  <div class="card" data-grp="status">
-    <h2>Power</h2>
+  <div class="card" data-grp="status" id="sec-power">
+    <h2>Controller power</h2>
     <div class="grid">
       <div class="stat"><div class="k">Battery</div><div class="v" id="vbat">--</div></div>
       <div class="stat"><div class="k">Input</div><div class="v" id="vin">--</div></div>
@@ -657,7 +672,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     </p>
   </div>
 
-  <div class="card" data-grp="status">
+  <div class="card" data-grp="status" id="sec-heatpump">
     <h2>Heat pump sensors</h2>
     <div class="grid">
       <div class="stat"><div class="k">Unit link</div><div class="v" id="dgLink">--</div></div>
@@ -675,7 +690,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     </div>
   </div>
 
-  <div class="card" data-grp="status">
+  <div class="card" data-grp="status" id="sec-activity">
     <h2>Activity</h2>
     <div class="sub" style="margin:-4px 0 12px">Recent changes to this zone, with who made them.</div>
     <div id="actList" class="act-list"><div class="act-empty">Loading…</div></div>
@@ -774,6 +789,10 @@ async function jget(url,opts){
   finally{ clearTimeout(t); }
 }
 
+function jumpTo(id){
+  const el=document.getElementById(id);
+  if(el) el.scrollIntoView({behavior:'smooth',block:'start'});
+}
 function showTab(name){
   // Climate and Zones are their own panels. Status (read-only telemetry) and
   // Settings (configuration) both live inside #panel-system and are shown by
