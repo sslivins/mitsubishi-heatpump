@@ -133,6 +133,15 @@ border-radius:8px;padding:8px 10px;margin-bottom:14px}
 .wf-row.cur{color:var(--green)}
 .wf-row .meta{display:flex;align-items:center;gap:8px;color:var(--fg-3);font-size:.85em}
 .wf-empty{padding:12px;color:var(--fg-3);font-size:.85em;text-align:center}
+.act-list{border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.act-item{display:flex;gap:10px;padding:10px 12px;border-top:1px solid var(--border)}
+.act-item:first-child{border-top:none}
+.act-ico{flex:none;width:22px;text-align:center;font-size:1.05em;line-height:1.4}
+.act-main{flex:1;min-width:0}
+.act-msg{font-size:.92em}
+.act-meta{color:var(--fg-3);font-size:.78em;margin-top:2px}
+.act-meta .who{color:var(--fg-2)}
+.act-empty{padding:12px;color:var(--fg-3);font-size:.85em;text-align:center}
 .wf-bars{display:inline-flex;align-items:flex-end;gap:2px;height:14px}
 .wf-bars i{width:3px;background:var(--hover);border-radius:1px}
 .wf-bars i.on{background:var(--fg-3)}
@@ -647,6 +656,16 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     </div>
   </div>
 
+  <div class="card" data-grp="status">
+    <h2>Activity</h2>
+    <div class="sub" style="margin:-4px 0 12px">Recent changes to this zone, with who made them.</div>
+    <div id="actList" class="act-list"><div class="act-empty">Loading…</div></div>
+    <div id="actMore" style="margin-top:10px;display:none">
+      <button class="btn" onclick="loadMoreActivity()">Load older</button>
+    </div>
+    <button class="btn btn-danger" style="margin-top:10px" onclick="clearActivity()">Clear activity log</button>
+  </div>
+
   <div class="card" data-grp="settings">
     <h2>Device</h2>
     <div class="sub" style="margin:-4px 0 14px">Restart the controller. Settings and WiFi are preserved.</div>
@@ -753,6 +772,8 @@ function showTab(name){
   }
   // Scan WiFi on entering Settings; the poll loop keeps it fresh while shown.
   netTabActive=(name==='settings');
+  statusTabActive=(name==='status');
+  if(statusTabActive && authState.role==='admin'){ refreshActivity(true); }
   mqEditing=false;   // switching tabs commits/abandons any in-progress MQTT edit
   if(netTabActive && authState.role==='admin'){ closeJoin(); scanWifi(true); }
   // Re-sync stored auth state when opening Settings so the pending-change gate
@@ -1174,6 +1195,7 @@ let curAuth=-1;          // auth mode of the current network (0=open, -1=unknown
 let curRssi=0;           // live RSSI of the current association (dBm), 0=n/a
 let wifiInfoKnown=false; // set once /api/wifi has returned (avoids first-load flicker)
 let netTabActive=false;  // whether the Settings tab is showing (drives WiFi auto-rescan)
+let statusTabActive=false;  // whether the Status tab is showing (drives Activity auto-refresh)
 
 async function loadWifi(){
   try{
@@ -1922,6 +1944,86 @@ function onGroupNameKey(e){
   if(e.key==='Enter'){e.preventDefault();groupRename();}
   else if(e.key==='Escape'){e.preventDefault();groupNameEditCancel();}
 }
+// ── Activity log (Status tab, admin-only) ─────────────────────────────
+// cat: 0 Mode,1 Power,2 Setpoint,3 Fan,4 Group,5 Membership,6 Ota,7 Net,8 Unit,9 Fault,10 System
+const ACT_ICONS=['\u{1F504}','\u23FB','\u{1F321}\uFE0F','\u{1F4A8}','\u{1F465}',
+                 '\u{1F517}','\u2B07\uFE0F','\u{1F4F6}','\u{1F50C}','\u26A0\uFE0F','\u2139\uFE0F'];
+let actLimit=25, actData=null;
+function actAgo(secs){
+  if(secs<0)secs=0;
+  if(secs<45)return'just now';
+  const m=Math.round(secs/60); if(m<60)return m+' min ago';
+  const h=Math.round(m/60); if(h<24)return h+' h ago';
+  const d=Math.round(h/24); return d+' d ago';
+}
+function actTime(ev,now){
+  if(ev.ts>0){
+    const d=new Date(ev.ts*1000);
+    const abs=d.toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+    return now>0 ? (actAgo(now-ev.ts)+' \u00B7 '+abs) : abs;
+  }
+  return 'before time sync';
+}
+function actWho(ev){
+  switch(ev.act){
+    case 1: return ev.name || 'Web UI';       // WebUI (name = username)
+    case 2: return 'Home Assistant';
+    case 3: return ev.name || 'another zone'; // Group (name = peer)
+    case 4: return 'Local';
+    default: return 'Device';
+  }
+}
+function renderActivity(){
+  const list=$('actList'); if(!list) return;
+  const evs=(actData&&actData.events)||[];
+  const now=(actData&&actData.now_epoch)||0;
+  list.textContent='';
+  if(!evs.length){
+    const e=document.createElement('div'); e.className='act-empty';
+    e.textContent='No activity recorded yet.'; list.appendChild(e);
+  }
+  evs.forEach(ev=>{
+    const row=document.createElement('div'); row.className='act-item';
+    const ico=document.createElement('div'); ico.className='act-ico';
+    ico.textContent=ACT_ICONS[ev.cat]||'\u2139\uFE0F';
+    const main=document.createElement('div'); main.className='act-main';
+    const msg=document.createElement('div'); msg.className='act-msg';
+    msg.textContent=ev.msg||'';               // trusted, but textContent regardless
+    const meta=document.createElement('div'); meta.className='act-meta';
+    meta.appendChild(document.createTextNode(actTime(ev,now)));
+    const who=actWho(ev);
+    if(who){
+      meta.appendChild(document.createTextNode(' \u00B7 '));
+      const w=document.createElement('span'); w.className='who';
+      w.textContent=who;                       // untrusted (peer/username) → textContent
+      meta.appendChild(w);
+    }
+    main.appendChild(msg); main.appendChild(meta);
+    row.appendChild(ico); row.appendChild(main); list.appendChild(row);
+  });
+  const more=$('actMore');
+  if(more) more.style.display=(evs.length>=actLimit && actLimit<96)?'':'none';
+}
+async function refreshActivity(reset){
+  if(reset) actLimit=25;
+  try{
+    const r=await jget('/api/events?limit='+actLimit);
+    if(!r.ok) return;                          // 403 for non-admin: leave as-is
+    actData=await r.json();
+    renderActivity();
+  }catch(e){}
+}
+async function loadMoreActivity(){
+  actLimit=Math.min(96,actLimit+25);
+  await refreshActivity(false);
+}
+async function clearActivity(){
+  if(!(await uiConfirm({body:'Clear the activity log for this zone? This cannot be undone.',
+                        okText:'Clear',danger:true}))) return;
+  try{ await fetch('/api/events',{method:'DELETE'}); }catch(e){}
+  await refreshActivity(true);
+}
+
 async function pollOnce(){
   await refresh();
   if(authState.role!=='admin'){ tickN++; return; }  // user role: climate only
@@ -1929,6 +2031,7 @@ async function pollOnce(){
   if(netTabActive && tickN%6===0 && $('wfJoin').classList.contains('hidden')) await scanWifi(false);
   if(tickN%6===0){ await refreshUpdate(); await loadMqtt(); }
   if(tickN%2===0) await refreshGroup();
+  if(statusTabActive && tickN%2===0) await refreshActivity(false);
   tickN++;
 }
 function schedule(ms){ clearTimeout(pollTimer); pollTimer=setTimeout(tick,ms); }

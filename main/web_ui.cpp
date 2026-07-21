@@ -8,8 +8,11 @@
 #include "group_config.h"
 #include "group_proto.h"
 #include "status_led.h"
+#include "events.h"
 
+#include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <strings.h>
 #include <map>
 #include <string>
@@ -136,6 +139,37 @@ bool admin_authorized(httpd_req_t* req) {
     char tok[AUTH_SESSION_TOKEN_LEN + 1];
     return get_cookie_token(req, tok, sizeof(tok)) &&
            auth_mgr_session_role(tok) == AUTH_ROLE_ADMIN;
+}
+
+// Human-readable label for whoever made a web-UI request, for the activity
+// log. Empty when web auth is disabled (the UI is anonymous). Admin resolves to
+// the configured username; the shared climate-only role logs as "climate user".
+std::string web_actor_name(httpd_req_t* req) {
+    if (!auth_mgr_web_auth_enabled()) return "";
+    char tok[AUTH_SESSION_TOKEN_LEN + 1];
+    if (get_cookie_token(req, tok, sizeof(tok))) {
+        if (auth_mgr_session_role(tok) == AUTH_ROLE_ADMIN) {
+            const char* u = auth_mgr_get_username();
+            return (u && u[0]) ? std::string(u) : std::string("admin");
+        }
+        if (auth_mgr_session_role(tok) == AUTH_ROLE_USER) return "climate user";
+    }
+    return "";  // API key / script
+}
+
+// Title-case a HVAC mode/fan token ("HEAT" -> "Heat", "fan_only" -> "Fan only")
+// for log messages. Leaves the input untouched apart from case + underscores.
+std::string pretty_token(const char* s) {
+    std::string out;
+    if (!s) return out;
+    bool start = true;
+    for (const char* p = s; *p; ++p) {
+        char c = *p;
+        if (c == '_') { out += ' '; start = true; continue; }
+        if (start) { out += (char)toupper((unsigned char)c); start = false; }
+        else out += (char)tolower((unsigned char)c);
+    }
+    return out;
 }
 
 void set_session_cookie(httpd_req_t* req, const char* token) {
@@ -347,12 +381,28 @@ esp_err_t handle_post_settings(httpd_req_t* req) {
 
     using K = hvac_mqtt::Command::Kind;
     const cJSON* v;
-    if ((v = cJSON_GetObjectItem(json, "power")) && cJSON_IsString(v))
+    std::string who = web_actor_name(req);
+    const char* wname = who.empty() ? "" : who.c_str();
+    if ((v = cJSON_GetObjectItem(json, "power")) && cJSON_IsString(v)) {
         apply(K::Power, v->valuestring);
-    if ((v = cJSON_GetObjectItem(json, "mode")) && cJSON_IsString(v))
+        // A mode field (below) already implies power-on; only log a standalone
+        // power change so an on+mode POST reads as one "Set to Heat" event.
+        if (!cJSON_IsString(cJSON_GetObjectItem(json, "mode"))) {
+            bool off = strcasecmp(v->valuestring, "off") == 0;
+            events::log(events::Cat::Power, events::Actor::WebUI,
+                        off ? "Turned off" : "Turned on", wname);
+        }
+    }
+    if ((v = cJSON_GetObjectItem(json, "mode")) && cJSON_IsString(v)) {
         apply(K::Mode, v->valuestring);
-    if ((v = cJSON_GetObjectItem(json, "fan")) && cJSON_IsString(v))
+        events::log(events::Cat::Mode, events::Actor::WebUI,
+                    ("Set to " + pretty_token(v->valuestring)).c_str(), wname);
+    }
+    if ((v = cJSON_GetObjectItem(json, "fan")) && cJSON_IsString(v)) {
         apply(K::Fan, v->valuestring);
+        events::log(events::Cat::Fan, events::Actor::WebUI,
+                    ("Fan set to " + pretty_token(v->valuestring)).c_str(), wname);
+    }
     if ((v = cJSON_GetObjectItem(json, "vane")) && cJSON_IsString(v))
         apply(K::Vane, v->valuestring);
     if ((v = cJSON_GetObjectItem(json, "wideVane")) && cJSON_IsString(v))
@@ -361,6 +411,9 @@ esp_err_t handle_post_settings(httpd_req_t* req) {
         char buf[16];
         snprintf(buf, sizeof(buf), "%.1f", v->valuedouble);
         apply(K::Temperature, buf);
+        char msg[48];
+        snprintf(msg, sizeof(msg), "Target set to %.1f\xC2\xB0""C", v->valuedouble);
+        events::log(events::Cat::Setpoint, events::Actor::WebUI, msg, wname);
     }
     if ((v = cJSON_GetObjectItem(json, "remoteTemp")) && cJSON_IsNumber(v)) {
         char buf[16];
@@ -1414,6 +1467,9 @@ esp_err_t handle_group_pair_claim(httpd_req_t* req) {
             return send_json_error(req, "401 Unauthorized", "invalid code");
         case hvac_group::ClaimDecision::Ok:
             wifi::set_pairing_advert(false);  // a head joined — close the advert
+            events::log(events::Cat::Membership, events::Actor::System,
+                        "Zone joined the group",
+                        (!jn.empty() ? jn.c_str() : joiner.c_str()));
             break;
     }
 
@@ -1572,6 +1628,14 @@ esp_err_t handle_group_pair_join(httpd_req_t* req) {
     cJSON_AddStringToObject(root, "group_id", g.group_id.c_str());
     cJSON_AddStringToObject(root, "group_label", g.group_label.c_str());
     cJSON_AddNumberToObject(root, "member_count", static_cast<int>(g.peers.size()) + 1);
+    {
+        std::string who = web_actor_name(req);
+        std::string msg = g.group_label.empty()
+                              ? std::string("Joined the group")
+                              : std::string("Joined group \"") + g.group_label + "\"";
+        events::log(events::Cat::Membership, events::Actor::WebUI, msg.c_str(),
+                    who.c_str());
+    }
     char* str = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, str);
@@ -1585,10 +1649,13 @@ esp_err_t handle_group_leave(httpd_req_t* req) {
     set_cors(req);
     REQUIRE_ADMIN(req);
     hvac_group::pairing_stop();
+    std::string who = web_actor_name(req);
     if (hvac_group::leave_group() != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS write failed");
         return ESP_FAIL;
     }
+    events::log(events::Cat::Membership, events::Actor::WebUI, "Left the group",
+                who.c_str());
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"status\":\"left\"}");
 }
@@ -1662,6 +1729,17 @@ esp_err_t handle_group_sync(httpd_req_t* req) {
         reason = "stale";
     } else {
         resolve_self(target, strat, reason);  // applied / aligned / dwell
+        if (reason == "applied") {
+            std::string sname = hvac_group::member_display_name(sender);
+            if (sname.empty()) sname = sender;
+            std::string msg = (strat == hvac_group::ResolveStrategy::OffConflicting)
+                                  ? "Turned off (group)"
+                                  : std::string("Changed to ") +
+                                        pretty_token(hvac_group::demand_str(target)) +
+                                        " (group)";
+            events::log(events::Cat::Group, events::Actor::Group, msg.c_str(),
+                        sname.c_str());
+        }
     }
 
     cJSON* root = cJSON_CreateObject();
@@ -1769,6 +1847,17 @@ esp_err_t handle_group_resolve(httpd_req_t* req) {
     bool all_ok = coordinate_group_to(target, strat, results, &self_reason);
     uint64_t op_id = hvac_group::last_op_id();
 
+    {
+        std::string verb = (strat == hvac_group::ResolveStrategy::OffConflicting)
+                               ? "Turned off conflicting zones"
+                               : std::string("Switched all zones to ") +
+                                     pretty_token(hvac_group::demand_str(target));
+        if (!all_ok) verb += " (some zones unreachable)";
+        std::string who = web_actor_name(req);
+        events::log(events::Cat::Group, events::Actor::WebUI, verb.c_str(),
+                    who.c_str());
+    }
+
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "status", all_ok ? "ok" : "partial");
     cJSON_AddNumberToObject(root, "op_id", (double)op_id);
@@ -1849,6 +1938,14 @@ esp_err_t handle_group_member_remove(httpd_req_t* req) {
     if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS write failed");
         return ESP_FAIL;
+    }
+    {
+        std::string rn = hvac_group::member_display_name(uid);
+        if (rn.empty()) rn = uid;
+        std::string who = web_actor_name(req);
+        events::log(events::Cat::Membership, events::Actor::WebUI,
+                    (std::string("Removed ") + rn + " from the group").c_str(),
+                    who.c_str());
     }
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
@@ -2118,10 +2215,45 @@ esp_err_t handle_auth_post(httpd_req_t* req) {
     return ESP_OK;
 }
 
+// ── GET /api/events (admin) ────────────────────────────────────────────
+// The activity log is admin-only. Optional query: since=<seq> (only newer),
+// limit=<n>. Newest-first. Fast: served from the in-RAM ring.
+esp_err_t handle_events_get(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    uint32_t since = 0, limit = 100;
+    size_t qlen = httpd_req_get_url_query_len(req);
+    if (qlen > 0 && qlen < 128) {
+        char q[128];
+        if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
+            char val[16];
+            if (httpd_query_key_value(q, "since", val, sizeof(val)) == ESP_OK)
+                since = (uint32_t)strtoul(val, nullptr, 10);
+            if (httpd_query_key_value(q, "limit", val, sizeof(val)) == ESP_OK)
+                limit = (uint32_t)strtoul(val, nullptr, 10);
+        }
+    }
+    std::string body = events::get_json(since, limit);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, body.c_str());
+    return ESP_OK;
+}
+
+// ── DELETE /api/events (admin) ─────────────────────────────────────────
+esp_err_t handle_events_clear(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_ADMIN(req);
+    events::clear();
+    events::log(events::Cat::System, events::Actor::WebUI, "Activity log cleared");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
 // ── OPTIONS /api/* (CORS preflight) ────────────────────────────────────
 esp_err_t handle_options(httpd_req_t* req) {
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
     httpd_resp_set_status(req, "204 No Content");
     return httpd_resp_send(req, nullptr, 0);
@@ -2158,6 +2290,9 @@ bool try_group_mode_command(const std::string& mode) {
     ESP_LOGI(TAG, "HA mode '%s' conflicts on grouped head -> switching all zones to %s",
              mode.c_str(), hvac_group::demand_str(target));
     coordinate_group_to(target, hvac_group::ResolveStrategy::FlipMode, nullptr, nullptr);
+    events::log(events::Cat::Group, events::Actor::HomeAssistant,
+                (std::string("Switched all zones to ") +
+                 pretty_token(hvac_group::demand_str(target))).c_str());
     return true;
 }
 
@@ -2167,7 +2302,7 @@ esp_err_t init(const Hooks& hooks) {
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn = httpd_uri_match_wildcard;
-    cfg.max_uri_handlers = 44;
+    cfg.max_uri_handlers = 46;
     cfg.stack_size = 8192;
     // The default 7 sockets reserve 3 for internal use, leaving only 4 for
     // clients — fewer than the 6 keep-alive connections a single browser tab
@@ -2228,6 +2363,8 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/logout",              HTTP_POST,    handle_logout,         nullptr},
         {"/api/auth",                HTTP_GET,      handle_auth_get,       nullptr},
         {"/api/auth",                HTTP_POST,     handle_auth_post,      nullptr},
+        {"/api/events",              HTTP_GET,      handle_events_get,     nullptr},
+        {"/api/events",              HTTP_DELETE,   handle_events_clear,   nullptr},
         {"/api/*",                   HTTP_OPTIONS, handle_options,        nullptr},
     };
     for (const auto& u : uris) {

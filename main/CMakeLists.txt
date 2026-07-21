@@ -19,6 +19,7 @@ idf_component_register(
          "ota.cpp"
          "auth_manager.cpp"
          "diag.cpp"
+         "events.cpp"
          "status_led.cpp"
     INCLUDE_DIRS "."
     EMBED_FILES "web/index.html.gz"
@@ -29,7 +30,7 @@ idf_component_register(
                 "web/manifest.webmanifest"
     REQUIRES nvs_flash esp_wifi esp_netif esp_event esp_driver_i2c
              driver esp_timer esp_app_format esp_http_server json lwip
-             app_update esp_https_ota esp_http_client mbedtls
+             app_update esp_https_ota esp_http_client mbedtls spiffs
              cn105 m5pm1 hvac_mqtt hvac_group
 )
 
