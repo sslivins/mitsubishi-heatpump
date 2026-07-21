@@ -98,6 +98,19 @@ public:
     void setVaneSetting(const std::string& vane);
     void setWideVaneSetting(const std::string& wideVane);
 
+    // --- Wide-vane capability probe (used by capability detection) ---
+    // Suspend normal wide-vane enforcement and send `target` once, so a caller
+    // can observe whether the unit holds it (powered) or reverts to its
+    // physical detent (manual louver). While a probe is active the pump neither
+    // re-asserts nor optimistically echoes the wide vane, so getSettings()
+    // reflects only the unit's real reported position.
+    void beginWideVaneProbe(const std::string& target);
+    // End the probe, resuming enforcement and driving the vane back to `restore`.
+    void endWideVaneProbeRestore(const std::string& restore);
+    // End the probe without altering wanted state — a concurrent user change
+    // made during the probe wins.
+    void abortWideVaneProbe();
+
     /// Push an external room-temperature reading to the unit so it regulates on
     /// a remote sensor instead of its own (the "remote_temp/set" feature).
     void setRemoteTemperature(float celsius);
@@ -122,6 +135,7 @@ private:
     void pump_();                              ///< one iteration of the state machine
     void sendConnect_();                       ///< send 0x5A handshake + read reply
     void flushWanted_(const Settings& wanted); ///< send SET packet, await 0x61 ACK
+    void sendWideVaneOnce_(const std::string& target); ///< one-shot wide-vane SET (probe)
     void sendInfoPacket_(int packetType);      ///< send 0x42 info request + read reply
     void sendRemoteTemp_(float celsius);       ///< send 0x07 remote-temperature packet
     void drainPackets_(int maxPackets);        ///< read up to N buffered packets
@@ -166,6 +180,9 @@ private:
     bool  d_fan_{false};
     bool  d_vane_{false};
     bool  d_wideVane_{false};
+    bool  wvProbe_{false};         ///< wide-vane enforcement suspended for a probe
+    bool  wvProbeSend_{false};     ///< a one-shot probe SET is queued
+    std::string wvProbeTarget_{};  ///< value for the one-shot probe SET
     uint32_t lastWanted_{0};
     bool  pendingRemoteTempSet_{false};
     float pendingRemoteTemp_{0.0f};

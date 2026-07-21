@@ -243,16 +243,34 @@ void HeatPump::pump_() {
 
     // Flush wanted settings if they differ from what the unit reports.
     Settings wsnap;
+    bool wvProbe, wvProbeSend;
+    std::string wvTarget;
     xSemaphoreTake(want_mtx_, portMAX_DELAY);
     wsnap = wanted_;
+    wvProbe = wvProbe_;
+    wvProbeSend = wvProbeSend_;
+    wvTarget = wvProbeTarget_;
     xSemaphoreGive(want_mtx_);
+
+    // One-shot wide-vane probe SET: send exactly once, without recording intent
+    // (no dirty flag, no optimistic current_ write), so we can then watch the
+    // unit's own reported position to tell powered from manual.
+    if (wvProbeSend && canSend_(false)) {
+        sendWideVaneOnce_(wvTarget);
+        xSemaphoreTake(want_mtx_, portMAX_DELAY);
+        wvProbeSend_ = false;
+        xSemaphoreGive(want_mtx_);
+        publishSnapshot_();
+        fireCallbacks_();
+        return;
+    }
 
     bool differs = (wsnap.power != current_.power) ||
                    (wsnap.mode != current_.mode) ||
                    (wsnap.temperature != current_.temperature) ||
                    (wsnap.fan != current_.fan) ||
                    (wsnap.vane != current_.vane) ||
-                   (wsnap.wideVane != current_.wideVane);
+                   (!wvProbe && wsnap.wideVane != current_.wideVane);
 
     if (autoUpdate_ && !firstRun_ && differs && canSend_(false)) {
         flushWanted_(wsnap);
@@ -280,10 +298,17 @@ void HeatPump::pump_() {
         }
     }
 
-    // Otherwise poll the unit for the next info packet.
+    // Otherwise poll the unit for the next info packet. During a wide-vane probe
+    // bias every poll to the settings (0x02) reply so current_ tracks the unit's
+    // real wide-vane position quickly enough to catch a manual louver's revert.
     if (canSend_(true)) {
-        int packetType = sync_requested_.exchange(false) ? RQST_PKT_SETTINGS
+        int packetType;
+        if (wvProbe) {
+            packetType = RQST_PKT_SETTINGS;
+        } else {
+            packetType = sync_requested_.exchange(false) ? RQST_PKT_SETTINGS
                                                          : PACKET_TYPE_DEFAULT;
+        }
         sendInfoPacket_(packetType);
     }
 
@@ -355,6 +380,26 @@ void HeatPump::flushWanted_(const Settings& wanted) {
         if (changed) settingsChanged_ = true;  // push the new state to UI + MQTT
         infoMode_ = 0;  // re-read settings on the next info tick to confirm
     }
+}
+
+void HeatPump::sendWideVaneOnce_(const std::string& target) {
+    // Build a wide-vane-only SET by diffing a copy that changes only wideVane;
+    // createSetPacket_ then emits just the wide-vane field. Deliberately does
+    // NOT write target into current_ — the probe must observe the unit's own
+    // echoed position (hold vs revert), not our optimistic guess.
+    Settings w = current_;
+    w.wideVane = target;
+    drainPackets_(4);
+    uint8_t pkt[PACKET_LEN] = {};
+    createSetPacket_(pkt, w);
+    writePacket_(pkt, PACKET_LEN);
+
+    uint32_t t0 = now_ms();
+    int r = RCVD_PKT_FAIL;
+    do {
+        r = readPacket_(300);
+    } while (r != RCVD_PKT_UPDATE_SUCCESS && (now_ms() - t0) < 1000);
+    infoMode_ = 0;  // re-read settings promptly so current_ tracks the unit
 }
 
 void HeatPump::sendInfoPacket_(int packetType) {
@@ -830,6 +875,37 @@ void HeatPump::setWideVaneSetting(const std::string& wideVane) {
     wanted_.wideVane = nv;
     d_wideVane_ = true;
     lastWanted_ = now_ms();
+    xSemaphoreGive(want_mtx_);
+}
+
+void HeatPump::beginWideVaneProbe(const std::string& target) {
+    int i = lookupIdxStr(WIDEVANE_MAP, 7, target);
+    std::string nv = (i >= 0) ? WIDEVANE_MAP[i] : WIDEVANE_MAP[0];
+    xSemaphoreTake(want_mtx_, portMAX_DELAY);
+    wvProbe_ = true;
+    wvProbeSend_ = true;
+    wvProbeTarget_ = nv;
+    xSemaphoreGive(want_mtx_);
+}
+
+void HeatPump::endWideVaneProbeRestore(const std::string& restore) {
+    int i = lookupIdxStr(WIDEVANE_MAP, 7, restore);
+    std::string nv = (i >= 0) ? WIDEVANE_MAP[i] : WIDEVANE_MAP[0];
+    xSemaphoreTake(want_mtx_, portMAX_DELAY);
+    wvProbe_ = false;
+    wvProbeSend_ = false;
+    wanted_.wideVane = nv;
+    d_wideVane_ = true;  // enforce the restore back to the pre-probe position
+    lastWanted_ = now_ms();
+    xSemaphoreGive(want_mtx_);
+}
+
+void HeatPump::abortWideVaneProbe() {
+    xSemaphoreTake(want_mtx_, portMAX_DELAY);
+    wvProbe_ = false;
+    wvProbeSend_ = false;
+    // Leave wanted_ untouched: enforcement resumes toward whatever the user (or
+    // adoption) last set, so a concurrent user change wins.
     xSemaphoreGive(want_mtx_);
 }
 

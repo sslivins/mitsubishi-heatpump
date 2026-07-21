@@ -9,6 +9,7 @@
 #include "group_proto.h"
 #include "status_led.h"
 #include "events.h"
+#include "capability.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -312,6 +313,22 @@ esp_err_t handle_get_settings(httpd_req_t* req) {
     cJSON_AddBoolToObject(root, "connected", st.connected);
     cJSON_AddStringToObject(root, "temp_unit",
                             wifi::temp_unit_fahrenheit() ? "F" : "C");
+    // Feature capabilities the UI needs inline (so it can hide the wide-vane
+    // control in the same poll it already runs). See /api/capabilities for the
+    // full object + control endpoints.
+    {
+        capability::Snapshot cap = capability::snapshot();
+        cJSON* caps = cJSON_CreateObject();
+        cJSON* wv = cJSON_CreateObject();
+        cJSON_AddStringToObject(wv, "detected",
+                                capability::wide_vane_to_str(cap.wideVane));
+        cJSON_AddStringToObject(wv, "override",
+                                capability::override_to_str(cap.override_m));
+        cJSON_AddBoolToObject(wv, "detecting", cap.detecting);
+        cJSON_AddBoolToObject(wv, "show", cap.show);
+        cJSON_AddItemToObject(caps, "wideVane", wv);
+        cJSON_AddItemToObject(root, "caps", caps);
+    }
     cJSON_AddNumberToObject(root, "roomTemperature", sta.roomTemperature);
     cJSON_AddBoolToObject(root, "operating", sta.operating);
     cJSON_AddNumberToObject(root, "compressorFrequency", sta.compressorFrequency);
@@ -428,7 +445,76 @@ esp_err_t handle_post_settings(httpd_req_t* req) {
     return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
 }
 
-// ── POST /api/system/restart ───────────────────────────────────────────
+// ── GET /api/capabilities ──────────────────────────────────────────────
+// Reports detected feature support + user override. Currently wide vane only.
+esp_err_t handle_capabilities_get(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_API_AUTH(req);
+    capability::Snapshot cap = capability::snapshot();
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON* wv = cJSON_CreateObject();
+    cJSON_AddStringToObject(wv, "detected", capability::wide_vane_to_str(cap.wideVane));
+    cJSON_AddStringToObject(wv, "override", capability::override_to_str(cap.override_m));
+    cJSON_AddBoolToObject(wv, "detecting", cap.detecting);
+    cJSON_AddBoolToObject(wv, "show", cap.show);
+    cJSON_AddItemToObject(root, "wideVane", wv);
+    // So the UI can explain why an on-demand detect can't run right now.
+    cJSON_AddBoolToObject(root, "unit_connected",
+                          s_hooks.unit_connected ? s_hooks.unit_connected() : false);
+    bool on = s_hooks.get_settings ? (s_hooks.get_settings().power == "ON") : false;
+    cJSON_AddBoolToObject(root, "unit_on", on);
+
+    char* str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// ── POST /api/capabilities ─────────────────────────────────────────────
+// Body: {"wideVane":{"override":"auto|show|hide"}} to set the override, and/or
+//       {"wideVane":{"detect":true}} to trigger an on-demand detection run.
+esp_err_t handle_capabilities_post(httpd_req_t* req) {
+    set_cors(req);
+    REQUIRE_API_AUTH(req);
+    char* body = recv_body(req);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or oversized body");
+        return ESP_FAIL;
+    }
+    cJSON* json = cJSON_Parse(body);
+    free(body);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+    std::string who = web_actor_name(req);
+    const cJSON* wv = cJSON_GetObjectItem(json, "wideVane");
+    if (cJSON_IsObject(wv)) {
+        const cJSON* ov = cJSON_GetObjectItem(wv, "override");
+        if (cJSON_IsString(ov)) {
+            capability::Override o = capability::override_from_str(ov->valuestring);
+            capability::set_wide_vane_override(o);
+            events::log(events::Cat::System, events::Actor::WebUI,
+                        (std::string("Wide-vane control set to ") +
+                         capability::override_to_str(o)).c_str(),
+                        who.empty() ? "" : who.c_str());
+        }
+        const cJSON* det = cJSON_GetObjectItem(wv, "detect");
+        if (cJSON_IsTrue(det)) {
+            capability::request_wide_vane_detect();
+            events::log(events::Cat::System, events::Actor::WebUI,
+                        "Wide-vane detection requested",
+                        who.empty() ? "" : who.c_str());
+        }
+    }
+    cJSON_Delete(json);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+}
+
 esp_err_t handle_restart(httpd_req_t* req) {
     set_cors(req);
     REQUIRE_ADMIN(req);
@@ -2409,6 +2495,8 @@ esp_err_t init(const Hooks& hooks) {
         {"/api/status",              HTTP_GET,     handle_status,         nullptr},
         {"/api/settings",            HTTP_GET,     handle_get_settings,   nullptr},
         {"/api/settings",            HTTP_POST,    handle_post_settings,  nullptr},
+        {"/api/capabilities",        HTTP_GET,     handle_capabilities_get,  nullptr},
+        {"/api/capabilities",        HTTP_POST,    handle_capabilities_post, nullptr},
         {"/api/ota",                 HTTP_POST,    handle_ota_upload,     nullptr},
         {"/api/ota/url",             HTTP_POST,    handle_ota_url,        nullptr},
         {"/api/ota/status",          HTTP_GET,     handle_ota_status,     nullptr},

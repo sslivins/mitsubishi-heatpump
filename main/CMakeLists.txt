@@ -20,6 +20,7 @@ idf_component_register(
          "auth_manager.cpp"
          "diag.cpp"
          "events.cpp"
+         "capability.cpp"
          "status_led.cpp"
     INCLUDE_DIRS "."
     EMBED_FILES "web/index.html.gz"
