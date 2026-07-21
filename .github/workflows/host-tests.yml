@@ -57,3 +57,7 @@ jobs:
       - name: Check member-row rendering (hostile display names)
         shell: bash
         run: node test/ui/check_render_handlers.mjs
+
+      - name: Check web UI render path (runtime smoke)
+        shell: bash
+        run: node test/ui/check_render_runtime.mjs

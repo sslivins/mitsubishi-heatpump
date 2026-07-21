@@ -552,7 +552,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     <div class="row">
       <label>Control</label>
       <select id="wvOverride" onchange="saveWideVaneOverride(this.value)">
-        <option value="auto">Automatic (detected)</option>
+        <option value="auto">Automatic</option>
         <option value="show">Always show</option>
         <option value="hide">Always hide</option>
       </select>
@@ -977,6 +977,7 @@ async function saveDisplayUnit(){
     msg.classList.add('hidden');
   }catch(e){ fail('Save failed'); }
 }
+const MODE_COLOR={HEAT:'#ff7b29',COOL:'#3b9bff',AUTO:'#3fb950',DRY:'#9aa4ad',FAN:'#9aa4ad'};
 // --- Wide-vane capability -------------------------------------------------
 const WV_STATUS={supported:'Powered (detected)',unsupported:'Manual louver (no motor)',
   inconclusive:'Not determined yet',unknown:'Not detected yet'};
