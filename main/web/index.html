@@ -397,7 +397,7 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
           <option>4</option><option>5</option><option>SWING</option>
         </select>
       </div>
-      <div class="row" style="margin-bottom:0">
+      <div class="row" style="margin-bottom:0" id="wideVaneRow">
         <label>Wide Vane</label>
         <select id="wideVane" onchange="setField('wideVane',this.value)">
           <option value="&lt;&lt;">Far left</option><option value="&lt;">Left</option><option value="|">Center</option>
@@ -541,6 +541,26 @@ border-radius:20px;background:var(--chip);color:var(--fg-3);border:1px solid var
     </div>
     <div class="sub" style="margin:-4px 0 4px">Applies to this web UI only. Home Assistant and MQTT always use &deg;C; the head is always commanded in &deg;C.</div>
     <div id="dispMsg" class="status hidden" style="margin:10px 0"></div>
+  </div>
+
+  <div class="card" data-grp="settings">
+    <h2>Wide vane</h2>
+    <div class="sub" style="margin:-4px 0 8px">Some units have a manual
+      wide-vane louver with no motor. The control is hidden automatically when
+      the unit ignores wide-vane commands.</div>
+    <div class="row"><label>Status</label><span class="v" id="wvStatus">--</span></div>
+    <div class="row">
+      <label>Control</label>
+      <select id="wvOverride" onchange="saveWideVaneOverride(this.value)">
+        <option value="auto">Automatic (detected)</option>
+        <option value="show">Always show</option>
+        <option value="hide">Always hide</option>
+      </select>
+    </div>
+    <div id="wvWarn" class="status hidden" style="margin:8px 0">Wide vane was
+      not detected on your unit and may have no effect.</div>
+    <div id="wvMsg" class="status hidden" style="margin:10px 0"></div>
+    <button class="btn" id="wvDetectBtn" onclick="detectWideVane()">Detect now</button>
   </div>
 
   <div class="card" data-grp="settings">
@@ -897,6 +917,7 @@ async function refresh(){
       if(c.fan&&confirmField('fan',c.fan))$('fan').value=c.fan;
       if(c.vane&&confirmField('vane',c.vane))$('vane').value=c.vane;
       if(c.wideVane&&confirmField('wideVane',c.wideVane))$('wideVane').value=c.wideVane;
+      applyCaps(c.caps);
       renderClimate();
       // Diagnostics tab — live serial telemetry.
       const conn=!!c.connected;
@@ -956,7 +977,53 @@ async function saveDisplayUnit(){
     msg.classList.add('hidden');
   }catch(e){ fail('Save failed'); }
 }
-const MODE_COLOR={HEAT:'#ff7b29',COOL:'#3b9bff',AUTO:'#3fb950',DRY:'#9aa4ad',FAN:'#9aa4ad'};
+// --- Wide-vane capability -------------------------------------------------
+const WV_STATUS={supported:'Powered (detected)',unsupported:'Manual louver (no motor)',
+  inconclusive:'Not determined yet',unknown:'Not detected yet'};
+function applyCaps(caps){
+  const wv=(caps&&caps.wideVane)||null;
+  // Show/hide the wide-vane control on the Climate tab.
+  const row=$('wideVaneRow');
+  if(row) row.style.display=(wv&&wv.show)?'':'none';
+  if(!wv) return;
+  // Settings card.
+  const st=$('wvStatus');
+  if(st) st.textContent=wv.detecting?'Detecting…':(WV_STATUS[wv.detected]||wv.detected);
+  const sel=$('wvOverride');
+  if(sel&&document.activeElement!==sel) sel.value=wv.override||'auto';
+  const warn=$('wvWarn');
+  if(warn) warn.classList.toggle('hidden',
+    !(wv.override==='show'&&wv.detected!=='supported'));
+  const btn=$('wvDetectBtn');
+  if(btn){ btn.disabled=!!wv.detecting; btn.textContent=wv.detecting?'Detecting…':'Detect now'; }
+}
+async function saveWideVaneOverride(v){
+  const msg=$('wvMsg');
+  try{
+    const r=await fetch('/api/capabilities',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({wideVane:{override:v}})});
+    if(r.status===401||r.status===403){ loadAuth(); return; }
+    if(!r.ok){ msg.textContent='Save failed';msg.className='status err';msg.classList.remove('hidden'); return; }
+    msg.classList.add('hidden');
+    refresh();
+  }catch(e){ msg.textContent='Save failed';msg.className='status err';msg.classList.remove('hidden'); }
+}
+async function detectWideVane(){
+  const msg=$('wvMsg');
+  try{
+    const r=await fetch('/api/capabilities',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({wideVane:{detect:true}})});
+    if(r.status===401||r.status===403){ loadAuth(); return; }
+    if(!r.ok){ msg.textContent='Could not start detection';msg.className='status err';msg.classList.remove('hidden'); return; }
+    // Confirm the unit is connected+on so the user knows it will actually run.
+    const c=await(await fetch('/api/capabilities')).json();
+    if(!c.unit_connected){ msg.textContent='Unit not connected — detection will run once it reconnects.';msg.className='status';msg.classList.remove('hidden'); }
+    else if(!c.unit_on){ msg.textContent='Turn the unit on to run detection (it won\u2019t power on by itself).';msg.className='status';msg.classList.remove('hidden'); }
+    else{ msg.textContent='Detecting… this moves the vane briefly and takes ~1 minute.';msg.className='status';msg.classList.remove('hidden'); }
+  }catch(e){ msg.textContent='Could not start detection';msg.className='status err';msg.classList.remove('hidden'); }
+}
 function tToAngle(t){return A_START+((t-T_MIN)/(T_MAX-T_MIN))*A_SWEEP;}
 function polar(aDeg,r){const a=aDeg*Math.PI/180;return [DC+r*Math.sin(a),DC-r*Math.cos(a)];}
 function arc(t0,t1){

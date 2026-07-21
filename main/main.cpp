@@ -19,6 +19,7 @@
 #include "ota.h"
 #include "diag.h"
 #include "events.h"
+#include "capability.h"
 #include "status_led.h"
 
 #include <cstdlib>
@@ -185,7 +186,12 @@ void on_mqtt_command(const hvac_mqtt::Command& cmd) {
         case K::Temperature: g_hp.setTemperature(strtof(cmd.value.c_str(), nullptr)); break;
         case K::Fan:         g_hp.setFanSpeed(cmd.value); break;
         case K::Vane:        g_hp.setVaneSetting(cmd.value); break;
-        case K::WideVane:    g_hp.setWideVaneSetting(cmd.value); break;
+        case K::WideVane:    g_hp.setWideVaneSetting(cmd.value);
+                             // A real user/HA wide-vane change must abort any
+                             // in-flight capability probe so it isn't misread
+                             // as a unit-initiated revert.
+                             capability::notify_user_wide_vane_change();
+                             break;
         case K::RemoteTemp:  g_hp.setRemoteTemperature(strtof(cmd.value.c_str(), nullptr)); break;
         case K::System:      ESP_LOGI(TAG, "system cmd: %s", cmd.value.c_str()); break;
         case K::Ota:         ota::start_url(cmd.value); break;
@@ -471,6 +477,21 @@ extern "C" void app_main() {
 
     // Heat pump protocol.
     xTaskCreate(cn105_task, "cn105", 8192, nullptr, 6, nullptr);
+
+    // Wide-vane capability detection: probes once (when the unit is connected
+    // and powered on) whether the wide vane is powered or a manual louver, so
+    // the web UI can hide a control that would do nothing. Reads/writes the
+    // vane through the CN105 driver; a user/HA change aborts an in-flight probe.
+    {
+        capability::Hooks caps;
+        caps.begin_probe    = [](const std::string& v) { g_hp.beginWideVaneProbe(v); };
+        caps.end_probe      = [](const std::string& v) { g_hp.endWideVaneProbeRestore(v); };
+        caps.abort_probe    = [] { g_hp.abortWideVaneProbe(); };
+        caps.get_wide_vane  = [] { return g_hp.getSettings().wideVane; };
+        caps.unit_connected = [] { return g_hp.isConnected(); };
+        caps.unit_on        = [] { return g_hp.getSettings().power == "ON"; };
+        capability::init(caps);
+    }
 
     ESP_LOGI(TAG, "mitsubishi-heatpump %s running",
              esp_app_get_description()->version);

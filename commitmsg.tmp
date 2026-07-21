@@ -1,0 +1,25 @@
+feat(cn105): wide-vane capability detection
+
+Actively probe once whether the wide vane is a powered louver or a
+manual adjuster, persist the verdict in NVS, and hide the wide-vane
+control in the web UI when it is manual/unknown (Option A).
+
+- New capability module (main/capability.{h,cpp}): 4-state detection
+  (unknown/supported/unsupported/inconclusive), NVS persistence with
+  algo-version gating, background detection task, and Auto/ForceShow/
+  ForceHide override.
+- One-shot probe primitive in the CN105 driver
+  (beginWideVaneProbe/endWideVaneProbeRestore/abortWideVaneProbe +
+  sendWideVaneOnce_) that suspends wide-vane enforcement so the unit's
+  real echoed position is observed instead of the driver optimistic
+  write-back. Aborts and reconciles to latest user intent on any
+  external change.
+- /api/capabilities GET+POST and caps block in /api/settings.
+- Web UI: hide wide-vane row when unsupported; new "Wide vane" settings
+  card with status, override select, warning, and Detect button.
+
+Verified on both heads (192.168.1.151, 192.168.1.108): both have manual
+louvers -> detected unsupported -> control hidden; override ForceShow
+re-shows it; UI validators pass.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
