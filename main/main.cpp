@@ -190,6 +190,21 @@ void on_mqtt_command(const hvac_mqtt::Command& cmd) {
     }
 }
 
+// Entry point for commands that arrive over MQTT (Home Assistant). This is the
+// group-aware wrapper: a Heat/Cool mode command on a grouped head that would
+// conflict with a peer is promoted to a whole-group switch (mirroring the web
+// UI's "switch all zones" confirm, which HA cannot render). Everything else —
+// including the local apply of that same switch, driven back through
+// web_ui::apply_command → on_mqtt_command — funnels through the plain applier,
+// so there is no re-entrancy.
+void on_mqtt_command_external(const hvac_mqtt::Command& cmd) {
+    if (cmd.kind == hvac_mqtt::Command::Kind::Mode &&
+        web_ui::try_group_mode_command(cmd.value)) {
+        return;  // handled as a coordinated whole-group switch
+    }
+    on_mqtt_command(cmd);
+}
+
 // Split a "mqtt://host:port" broker URI into host + port for the settings model.
 void parse_broker_uri(const std::string& uri, std::string& host, int& port) {
     std::string s = uri;
@@ -294,7 +309,7 @@ extern "C" void app_main() {
         .device_uid    = uid,
         .sw_version    = esp_app_get_description()->version,
     };
-    if (hvac_mqtt::init(mcfg, on_mqtt_command) != ESP_OK) {
+    if (hvac_mqtt::init(mcfg, on_mqtt_command_external) != ESP_OK) {
         ESP_LOGE(TAG, "MQTT init failed");
     }
 
