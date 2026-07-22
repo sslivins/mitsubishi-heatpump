@@ -8,6 +8,7 @@ on:
       - 'components/hvac_mqtt/include/hvac_topics.h'
       - 'components/hvac_group/group_proto.cpp'
       - 'components/hvac_group/include/group_proto.h'
+      - 'components/cn105/**'
       - 'test/host/**'
       - 'test/ui/**'
       - 'test/api/**'
@@ -22,6 +23,7 @@ on:
       - 'components/hvac_mqtt/include/hvac_topics.h'
       - 'components/hvac_group/group_proto.cpp'
       - 'components/hvac_group/include/group_proto.h'
+      - 'components/cn105/**'
       - 'test/host/**'
       - 'test/ui/**'
       - 'test/api/**'
@@ -55,6 +57,16 @@ jobs:
             test/host/test_group_proto.cpp \
             -o group_tests
           ./group_tests
+
+      - name: Build and run host CN105 codec tests
+        shell: bash
+        run: |
+          g++ -std=c++17 -Wall -Wextra -fsanitize=address,undefined \
+            -I components/cn105/include \
+            components/cn105/cn105_codec.cpp \
+            test/host/test_cn105_codec.cpp \
+            -o cn105_codec_tests
+          ./cn105_codec_tests
 
       - name: Check web UI syntax
         shell: bash
