@@ -44,9 +44,6 @@ vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .hidden{display:none}
 .hint{font-size:.78em;color:#8b949e;line-height:1.4}
-.landing-link{display:inline-block;margin-top:12px;background:#e60012;color:#fff;
-text-decoration:none;font-weight:600;padding:11px 20px;border-radius:8px}
-.landing-link:hover{background:#c40010}
 .url-box{margin-top:10px;padding:11px 12px;border:1px solid #30363d;border-radius:8px;
 background:#0e1116;color:#e6edf3;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
 font-size:.9em;word-break:break-all;user-select:all;-webkit-user-select:all}
@@ -193,7 +190,6 @@ function landing(host){
     'normal Wi-Fi and open it in your browser to reach '+esc(label)+':</div>'+
     '<div class="url-box" id="urlBox">'+esc(_devUrl)+'</div>'+
     '<button class="btn-copy" id="copyBtn" onclick="copyUrl()">Copy link</button>'+
-    '<a class="landing-link" href="'+_devUrl+'">Open '+esc(label)+' →</a>'+
     '<div class="hint" id="cdHint" style="margin-top:12px">Finishing setup in '+
       FINISH_SECS+'s…</div>';
   startCountdown();
@@ -223,8 +219,7 @@ function finishSetup(silent){
   el.innerHTML='<b>Finishing up…</b>'+
     (_devUrl?('<div class="hint" style="margin-top:10px">Rejoin your normal Wi-Fi, '+
       'then open the address you copied:</div>'+
-      '<div class="url-box">'+esc(_devUrl)+'</div>'+
-      '<a class="landing-link" href="'+_devUrl+'">Open →</a>'):
+      '<div class="url-box">'+esc(_devUrl)+'</div>'):
       '<div class="hint" style="margin-top:10px">Reconnect to your normal Wi-Fi; the '+
       'device will be on your network shortly.</div>');
   if(!_devUrl)return;
