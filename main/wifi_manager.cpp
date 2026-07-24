@@ -17,6 +17,7 @@
 #include "esp_mac.h"
 #include "esp_app_desc.h"
 #include "esp_http_server.h"
+#include "esp_timer.h"
 #include "mdns.h"
 #include "cJSON.h"
 #include "nvs.h"
@@ -204,7 +205,28 @@ esp_err_t portal_scan(httpd_req_t* req) {
     return ESP_OK;
 }
 
-// POST /api/connect — { "ssid": "...", "pass": "..." } → save + reboot.
+// A reboot is what finally applies the saved credentials and tears down the
+// SoftAP. We defer it (rather than rebooting immediately in /api/connect) so
+// the portal's success screen can stay live while the user copies the device
+// URL. The reboot fires on whichever comes first: the user finishing setup
+// (/api/finish, e.g. right after they tap Copy) or a device-side safety timer
+// (in case the phone/captive sheet disappears and its JS timer never runs).
+static esp_timer_handle_t s_reboot_timer = nullptr;
+static void reboot_timer_cb(void*) { esp_restart(); }
+static void schedule_reboot(uint32_t delay_ms) {
+    if (!s_reboot_timer) {
+        esp_timer_create_args_t a = {};
+        a.callback = &reboot_timer_cb;
+        a.dispatch_method = ESP_TIMER_TASK;
+        a.name = "provisioning_reboot";
+        esp_timer_create(&a, &s_reboot_timer);
+    }
+    esp_timer_stop(s_reboot_timer);  // harmless if not running; lets us reschedule
+    esp_timer_start_once(s_reboot_timer, static_cast<uint64_t>(delay_ms) * 1000ULL);
+}
+
+// POST /api/connect — { "ssid": "...", "pass": "..." } → save creds, arm a
+// safety reboot, and return the mDNS host so the portal can show its URL.
 esp_err_t portal_connect(httpd_req_t* req) {
     char buf[256] = {};
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
@@ -232,21 +254,35 @@ esp_err_t portal_connect(httpd_req_t* req) {
     cJSON* jname = cJSON_GetObjectItem(json, "name");
     if (jname && cJSON_IsString(jname)) set_display_name(jname->valuestring);
 
-    ESP_LOGI(TAG, "portal: saving creds for '%s' and rebooting", ssid);
+    ESP_LOGI(TAG, "portal: saving creds for '%s' (deferred reboot)", ssid);
     save_credentials(ssid, pass);
     cJSON_Delete(json);
 
     // Hand the portal page the exact mDNS hostname the device will come up on
-    // after it reboots, so the success screen can auto-redirect the browser
-    // there once the phone rejoins the home network — no IP lookup needed. The
-    // hostname is [a-z0-9-] only, so it needs no JSON escaping.
+    // after it reboots, so the success screen can show/copy/open that URL — no
+    // IP lookup needed. The hostname is [a-z0-9-] only, so it needs no escaping.
     std::string resp = "{\"status\":\"saved\",\"host\":\"" + mdns_hostname() +
-                       "\",\"message\":\"Rebooting…\"}";
+                       "\",\"message\":\"Ready to finish\"}";
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp.c_str());
-    vTaskDelay(pdMS_TO_TICKS(1500));
-    esp_restart();
-    return ESP_OK;  // unreachable
+
+    // Keep the AP (and this page) alive so the user isn't racing a reboot while
+    // copying the URL. If they never signal /api/finish (e.g. the iOS captive
+    // sheet closed and its JS timer stopped), reboot anyway after 3 minutes so
+    // the device always comes up on the home network on its own.
+    schedule_reboot(180000);
+    return ESP_OK;
+}
+
+// POST /api/finish — the user is done with the success screen (typically right
+// after copying the URL). Reboot promptly so the device joins the home network;
+// a short delay lets this response flush before the SoftAP drops.
+esp_err_t portal_finish(httpd_req_t* req) {
+    ESP_LOGI(TAG, "portal: finish requested — rebooting");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"status\":\"rebooting\"}");
+    schedule_reboot(800);
+    return ESP_OK;
 }
 
 esp_err_t start_provisioning() {
@@ -285,6 +321,8 @@ esp_err_t start_provisioning() {
         httpd_register_uri_handler(s_portal, &scan);
         const httpd_uri_t conn = {"/api/connect", HTTP_POST, portal_connect, nullptr};
         httpd_register_uri_handler(s_portal, &conn);
+        const httpd_uri_t fin = {"/api/finish", HTTP_POST, portal_finish, nullptr};
+        httpd_register_uri_handler(s_portal, &fin);
 
         static const char* probes[] = {
             "/generate_204", "/gen_204", "/hotspot-detect.html",
