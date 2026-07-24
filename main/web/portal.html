@@ -59,8 +59,10 @@ font-size:.9em;word-break:break-all;user-select:all;-webkit-user-select:all}
   <h1>Mitsubishi Heat Pump</h1>
   <p class="sub">WiFi Setup</p>
 
-  <label for="devname">Device name (optional)</label>
-  <input type="text" id="devname" maxlength="32" placeholder="e.g. Living Room" autocomplete="off" autocorrect="off" spellcheck="false">
+  <div id="nameGroup">
+    <label for="devname">Device name (optional)</label>
+    <input type="text" id="devname" maxlength="32" placeholder="e.g. Living Room" autocomplete="off" autocorrect="off" spellcheck="false">
+  </div>
 
   <button class="btn-scan" id="scanBtn" onclick="doScan()">Scan for Networks</button>
 
@@ -173,7 +175,8 @@ let _cdTimer=null;
 const FINISH_SECS=15;
 
 function landing(host){
-  ['scanBtn','netList','passGroup','connBtn'].forEach(id=>$(id).classList.add('hidden'));
+  ['scanBtn','netList','passGroup','connBtn','nameGroup'].forEach(id=>$(id).classList.add('hidden'));
+  if(document.activeElement&&document.activeElement.blur)document.activeElement.blur();
   const label=$('devname').value.trim()||'your heat pump';
   _devUrl=host?('http://'+host+'.local/'):'';
   const el=$('status');
