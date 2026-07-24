@@ -43,6 +43,10 @@ border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinit
 vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .hidden{display:none}
+.hint{font-size:.78em;color:#8b949e;line-height:1.4}
+.landing-link{display:inline-block;margin-top:12px;background:#e60012;color:#fff;
+text-decoration:none;font-weight:600;padding:11px 20px;border-radius:8px}
+.landing-link:hover{background:#c40010}
 </style>
 </head>
 <body>
@@ -139,17 +143,59 @@ async function doConnect(){
     return;
   }
   $('connBtn').disabled=true;
-  showStatus('<span class="spin"></span> Saving credentials & rebooting…','info');
+  showStatus('<span class="spin"></span> Saving credentials…','info');
+  let host='';
   try{
-    await fetch('/api/connect',{
+    const r=await fetch('/api/connect',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({ssid:selSSID,pass:pass,name:$('devname').value.trim()})
     });
-    showStatus('Credentials saved! Device is rebooting.<br>Reconnect to your normal WiFi.','ok');
-  }catch(e){
-    showStatus('Device is rebooting…','ok');
+    try{const j=await r.json();host=j.host||'';}catch(_){/* body may be cut by reboot */}
+  }catch(e){/* device may reboot before the response is delivered */}
+  landing(host);
+}
+
+// After creds are saved the device reboots and joins the home network — at
+// which point this SoftAP goes away and the phone auto-rejoins its normal
+// Wi-Fi. This page stays open in the browser the whole time, so we simply
+// probe the device's known mDNS hostname (returned by /api/connect) and, the
+// moment it answers, redirect the browser straight to it. The user never has
+// to know, type, or remember the URL. A one-tap fallback link appears if mDNS
+// is slow or unavailable (e.g. some older Android builds).
+function landing(host){
+  ['scanBtn','netList','passGroup','connBtn'].forEach(id=>$(id).classList.add('hidden'));
+  const label=$('devname').value.trim()||'your heat pump';
+  if(!host){
+    showStatus('Credentials saved — the device is rebooting.<br>'+
+      '<span class="hint">Reconnect to your normal Wi-Fi; it will be on your '+
+      'network shortly.</span>','ok');
+    return;
   }
+  const url='http://'+host+'.local/';
+  showStatus('<span class="spin"></span> Taking you to <b>'+esc(label)+'</b>…<br>'+
+    '<span class="hint">Rejoin your normal Wi-Fi if your phone asks.</span>','info');
+  let done=false;
+  const finish=()=>{if(done)return;done=true;location.replace(url);};
+  const probe=()=>{
+    if(done)return;
+    const img=new Image();
+    img.onload=finish;              // 2xx image = device is reachable
+    img.src=url+'icon-192.png?_='+Date.now();
+  };
+  const iv=setInterval(()=>{if(done)clearInterval(iv);else probe();},2000);
+  probe();
+  // Fallback: if we still can't reach it after ~18s, offer a one-tap link but
+  // keep probing so it still auto-jumps the instant the device comes up.
+  setTimeout(()=>{
+    if(done)return;
+    const el=$('status');
+    el.className='status ok';
+    el.innerHTML='<b>'+esc(label)+'</b> should be ready.'+
+      '<br><a class="landing-link" href="'+url+'">Open '+esc(label)+' →</a>'+
+      '<div class="hint" style="margin-top:10px">'+esc(url)+'</div>'+
+      '<div class="hint">Make sure your phone is back on your normal Wi-Fi.</div>';
+  },18000);
 }
 
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}

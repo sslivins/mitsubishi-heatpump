@@ -236,8 +236,14 @@ esp_err_t portal_connect(httpd_req_t* req) {
     save_credentials(ssid, pass);
     cJSON_Delete(json);
 
+    // Hand the portal page the exact mDNS hostname the device will come up on
+    // after it reboots, so the success screen can auto-redirect the browser
+    // there once the phone rejoins the home network — no IP lookup needed. The
+    // hostname is [a-z0-9-] only, so it needs no JSON escaping.
+    std::string resp = "{\"status\":\"saved\",\"host\":\"" + mdns_hostname() +
+                       "\",\"message\":\"Rebooting…\"}";
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"status\":\"saved\",\"message\":\"Rebooting…\"}");
+    httpd_resp_sendstr(req, resp.c_str());
     vTaskDelay(pdMS_TO_TICKS(1500));
     esp_restart();
     return ESP_OK;  // unreachable
