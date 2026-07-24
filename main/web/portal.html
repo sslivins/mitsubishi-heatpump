@@ -47,6 +47,11 @@ vertical-align:middle;margin-right:6px}
 .landing-link{display:inline-block;margin-top:12px;background:#e60012;color:#fff;
 text-decoration:none;font-weight:600;padding:11px 20px;border-radius:8px}
 .landing-link:hover{background:#c40010}
+.url-box{margin-top:10px;padding:11px 12px;border:1px solid #30363d;border-radius:8px;
+background:#0e1116;color:#e6edf3;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+font-size:.9em;word-break:break-all;user-select:all;-webkit-user-select:all}
+.btn-copy{background:#21262d;color:#e6edf3;border:1px solid #30363d;margin-top:10px}
+.btn-copy:hover{background:#30363d}
 </style>
 </head>
 <body>
@@ -157,45 +162,73 @@ async function doConnect(){
 }
 
 // After creds are saved the device reboots and joins the home network — at
-// which point this SoftAP goes away and the phone auto-rejoins its normal
-// Wi-Fi. This page stays open in the browser the whole time, so we simply
-// probe the device's known mDNS hostname (returned by /api/connect) and, the
-// moment it answers, redirect the browser straight to it. The user never has
-// to know, type, or remember the URL. A one-tap fallback link appears if mDNS
-// is slow or unavailable (e.g. some older Android builds).
+// which point this SoftAP goes away and the phone rejoins its normal Wi-Fi.
+// On Android/desktop we can probe the device's mDNS hostname and auto-jump the
+// moment it answers. On iOS the captive-portal sheet is sandboxed and cannot
+// route to the home LAN nor hand off to Safari, so an auto-redirect is
+// impossible there — instead we surface the device URL prominently with a
+// Copy button (and one-tap select) so the user can paste it into their browser.
+let _devUrl='';
 function landing(host){
   ['scanBtn','netList','passGroup','connBtn'].forEach(id=>$(id).classList.add('hidden'));
   const label=$('devname').value.trim()||'your heat pump';
-  if(!host){
-    showStatus('Credentials saved — the device is rebooting.<br>'+
-      '<span class="hint">Reconnect to your normal Wi-Fi; it will be on your '+
-      'network shortly.</span>','ok');
-    return;
+  _devUrl=host?('http://'+host+'.local/'):'';
+  const el=$('status');
+  el.className='status ok';
+  let html='<b>Setup complete!</b> '+esc(label)+' is joining your Wi-Fi.';
+  if(_devUrl){
+    html+='<div class="hint" style="margin-top:10px">Rejoin your normal Wi-Fi, then '+
+      'open this address in your browser to reach '+esc(label)+':</div>'+
+      '<div class="url-box" id="urlBox">'+esc(_devUrl)+'</div>'+
+      '<button class="btn-copy" id="copyBtn" onclick="copyUrl()">Copy link</button>'+
+      '<a class="landing-link" href="'+_devUrl+'">Open '+esc(label)+' →</a>';
+  }else{
+    html+='<div class="hint" style="margin-top:10px">Reconnect to your normal Wi-Fi; '+
+      'the device will be on your network shortly.</div>';
   }
-  const url='http://'+host+'.local/';
-  showStatus('<span class="spin"></span> Taking you to <b>'+esc(label)+'</b>…<br>'+
-    '<span class="hint">Rejoin your normal Wi-Fi if your phone asks.</span>','info');
+  el.innerHTML=html;
+  if(!_devUrl)return;
+  // Android/desktop bonus: auto-jump the instant the device becomes reachable.
+  // (This never fires inside the iOS captive sheet, which is expected.)
   let done=false;
-  const finish=()=>{if(done)return;done=true;location.replace(url);};
+  const finish=()=>{if(done)return;done=true;location.replace(_devUrl);};
   const probe=()=>{
     if(done)return;
     const img=new Image();
     img.onload=finish;              // 2xx image = device is reachable
-    img.src=url+'icon-192.png?_='+Date.now();
+    img.src=_devUrl+'icon-192.png?_='+Date.now();
   };
   const iv=setInterval(()=>{if(done)clearInterval(iv);else probe();},2000);
   probe();
-  // Fallback: if we still can't reach it after ~18s, offer a one-tap link but
-  // keep probing so it still auto-jumps the instant the device comes up.
-  setTimeout(()=>{
-    if(done)return;
-    const el=$('status');
-    el.className='status ok';
-    el.innerHTML='<b>'+esc(label)+'</b> should be ready.'+
-      '<br><a class="landing-link" href="'+url+'">Open '+esc(label)+' →</a>'+
-      '<div class="hint" style="margin-top:10px">'+esc(url)+'</div>'+
-      '<div class="hint">Make sure your phone is back on your normal Wi-Fi.</div>';
-  },18000);
+}
+
+// Robust copy: modern async Clipboard API needs a secure context (the portal
+// is plain http://192.168.4.1, so it's often unavailable) — fall back to the
+// legacy execCommand path, and if even that fails, tell the user to long-press
+// the URL (which is user-select:all, so one tap selects the whole thing).
+function copyUrl(){
+  if(!_devUrl)return;
+  const btn=$('copyBtn');
+  const flash=(t)=>{btn.textContent=t;setTimeout(()=>{btn.textContent='Copy link';},2200);};
+  const ok=()=>flash('Copied ✓');
+  const fail=()=>flash('Press & hold the address to copy');
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(_devUrl).then(ok,()=>{legacyCopy(_devUrl)?ok():fail();});
+  }else{
+    legacyCopy(_devUrl)?ok():fail();
+  }
+}
+function legacyCopy(text){
+  try{
+    const ta=document.createElement('textarea');
+    ta.value=text;ta.setAttribute('readonly','');
+    ta.style.position='fixed';ta.style.top='0';ta.style.opacity='0';
+    document.body.appendChild(ta);
+    ta.focus();ta.select();ta.setSelectionRange(0,text.length);
+    const done=document.execCommand('copy');
+    document.body.removeChild(ta);
+    return done;
+  }catch(_){return false;}
 }
 
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
