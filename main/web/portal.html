@@ -161,57 +161,100 @@ async function doConnect(){
   landing(host);
 }
 
-// After creds are saved the device reboots and joins the home network — at
-// which point this SoftAP goes away and the phone rejoins its normal Wi-Fi.
-// On Android/desktop we can probe the device's mDNS hostname and auto-jump the
-// moment it answers. On iOS the captive-portal sheet is sandboxed and cannot
-// route to the home LAN nor hand off to Safari, so an auto-redirect is
-// impossible there — instead we surface the device URL prominently with a
-// Copy button (and one-tap select) so the user can paste it into their browser.
+// After creds are saved the device does NOT reboot immediately — the SoftAP
+// (and this page) stay up so the user can copy the device URL without racing a
+// reboot. The reboot is triggered by finishSetup() below: right after a
+// successful Copy, when the 15s countdown expires, or via the manual link if
+// copy fails. A device-side safety timer reboots anyway if this page vanishes
+// (e.g. the iOS captive sheet closes and its JS stops running).
 let _devUrl='';
+let _finishing=false;
+let _cdTimer=null;
+const FINISH_SECS=15;
+
 function landing(host){
   ['scanBtn','netList','passGroup','connBtn'].forEach(id=>$(id).classList.add('hidden'));
   const label=$('devname').value.trim()||'your heat pump';
   _devUrl=host?('http://'+host+'.local/'):'';
   const el=$('status');
   el.className='status ok';
-  let html='<b>Setup complete!</b> '+esc(label)+' is joining your Wi-Fi.';
-  if(_devUrl){
-    html+='<div class="hint" style="margin-top:10px">Rejoin your normal Wi-Fi, then '+
-      'open this address in your browser to reach '+esc(label)+':</div>'+
-      '<div class="url-box" id="urlBox">'+esc(_devUrl)+'</div>'+
-      '<button class="btn-copy" id="copyBtn" onclick="copyUrl()">Copy link</button>'+
-      '<a class="landing-link" href="'+_devUrl+'">Open '+esc(label)+' →</a>';
-  }else{
-    html+='<div class="hint" style="margin-top:10px">Reconnect to your normal Wi-Fi; '+
+  if(!_devUrl){
+    el.innerHTML='<b>Setup complete!</b> '+esc(label)+' is joining your Wi-Fi.'+
+      '<div class="hint" style="margin-top:10px">Reconnect to your normal Wi-Fi; '+
       'the device will be on your network shortly.</div>';
+    finishSetup(true);   // nothing to copy — reboot promptly
+    return;
   }
-  el.innerHTML=html;
+  el.innerHTML='<b>Setup complete!</b> '+esc(label)+' is joining your Wi-Fi.'+
+    '<div class="hint" style="margin-top:10px">Copy this address, then rejoin your '+
+    'normal Wi-Fi and open it in your browser to reach '+esc(label)+':</div>'+
+    '<div class="url-box" id="urlBox">'+esc(_devUrl)+'</div>'+
+    '<button class="btn-copy" id="copyBtn" onclick="copyUrl()">Copy link</button>'+
+    '<a class="landing-link" href="'+_devUrl+'">Open '+esc(label)+' →</a>'+
+    '<div class="hint" id="cdHint" style="margin-top:12px">Finishing setup in '+
+      FINISH_SECS+'s…</div>';
+  startCountdown();
+}
+
+function startCountdown(){
+  let left=FINISH_SECS;
+  _cdTimer=setInterval(()=>{
+    left--;
+    const h=$('cdHint');
+    if(h)h.textContent='Finishing setup in '+left+'s…';
+    if(left<=0){stopCountdown();finishSetup();}
+  },1000);
+}
+function stopCountdown(){if(_cdTimer){clearInterval(_cdTimer);_cdTimer=null;}}
+
+// Tell the device to reboot (which applies the creds + drops the AP) and switch
+// this page to a waiting screen. Idempotent — only the first call counts.
+function finishSetup(silent){
+  if(_finishing)return;
+  _finishing=true;
+  stopCountdown();
+  try{fetch('/api/finish',{method:'POST'});}catch(_){/* AP may drop mid-request */}
+  if(silent)return;
+  const el=$('status');
+  el.className='status ok';
+  el.innerHTML='<b>Finishing up…</b>'+
+    (_devUrl?('<div class="hint" style="margin-top:10px">Rejoin your normal Wi-Fi, '+
+      'then open the address you copied:</div>'+
+      '<div class="url-box">'+esc(_devUrl)+'</div>'+
+      '<a class="landing-link" href="'+_devUrl+'">Open →</a>'):
+      '<div class="hint" style="margin-top:10px">Reconnect to your normal Wi-Fi; the '+
+      'device will be on your network shortly.</div>');
   if(!_devUrl)return;
-  // Android/desktop bonus: auto-jump the instant the device becomes reachable.
-  // (This never fires inside the iOS captive sheet, which is expected.)
+  // Bonus for Android/desktop where this page survives the Wi-Fi switch: auto-
+  // jump the instant the device answers on the home network.
   let done=false;
-  const finish=()=>{if(done)return;done=true;location.replace(_devUrl);};
+  const jump=()=>{if(done)return;done=true;location.replace(_devUrl);};
   const probe=()=>{
     if(done)return;
     const img=new Image();
-    img.onload=finish;              // 2xx image = device is reachable
+    img.onload=jump;                // 2xx image = device is reachable
     img.src=_devUrl+'icon-192.png?_='+Date.now();
   };
   const iv=setInterval(()=>{if(done)clearInterval(iv);else probe();},2000);
-  probe();
+  setTimeout(probe,2000);           // let the device start rebooting first
 }
 
 // Robust copy: modern async Clipboard API needs a secure context (the portal
 // is plain http://192.168.4.1, so it's often unavailable) — fall back to the
-// legacy execCommand path, and if even that fails, tell the user to long-press
-// the URL (which is user-select:all, so one tap selects the whole thing).
+// legacy execCommand path. A successful copy is the user's "done" signal, so it
+// finishes setup immediately. If copy fails entirely we stop the countdown so
+// the page stays put while they long-press the address, and offer a manual link.
 function copyUrl(){
   if(!_devUrl)return;
   const btn=$('copyBtn');
-  const flash=(t)=>{btn.textContent=t;setTimeout(()=>{btn.textContent='Copy link';},2200);};
-  const ok=()=>flash('Copied ✓');
-  const fail=()=>flash('Press & hold the address to copy');
+  const ok=()=>{btn.textContent='Copied ✓';finishSetup();};
+  const fail=()=>{
+    stopCountdown();
+    btn.textContent='Press & hold the address above to copy';
+    const h=$('cdHint');
+    if(h)h.innerHTML='When you\u2019ve got it, '+
+      '<a href="#" onclick="finishSetup();return false;">finish setup →</a>';
+  };
   if(navigator.clipboard&&navigator.clipboard.writeText){
     navigator.clipboard.writeText(_devUrl).then(ok,()=>{legacyCopy(_devUrl)?ok():fail();});
   }else{
